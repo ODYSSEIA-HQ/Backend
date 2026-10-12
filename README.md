@@ -10,11 +10,14 @@ odysseia/
 ├── centrifugo/config.json    # 四 namespace：topic / chat / typing / user
 ├── nodebb/Dockerfile         # 官方 NodeBB 4 + 两个自研插件
 ├── plugins/
-│   ├── nodebb-plugin-odysseia-bridge/   # 桥接：hooks→Centrifugo 广播 + Meili 同步 + 内部鉴权 API
-│   │   ├── library.js        #   频道命名：topic:{tid} / chat:{roomId} / user:{uid}
-│   │   ├── lib/centrifugo.js #   HTTP API 客户端（fire-and-forget，失败不阻塞发帖）
-│   │   ├── lib/search.js     #   Meilisearch 索引同步（增删改幂等）
-│   │   └── lib/internal.js   #   can-read / can-chat（X-Internal-Token）
+│   ├── nodebb-plugin-odysseia-bridge/   # 桥接：hooks→Centrifugo 广播 + Meili 同步 + 内部鉴权 API + 身分组装饰
+│   │   ├── library.js         #   频道命名：topic:{tid} / chat:{roomId} / user:{uid}；装饰 hook 接线
+│   │   ├── lib/centrifugo.js  #   HTTP API 客户端（fire-and-forget，失败不阻塞发帖）
+│   │   ├── lib/search.js      #   Meilisearch 索引同步（增删改幂等）
+│   │   ├── lib/internal.js    #   can-read / can-chat（X-Internal-Token）
+│   │   ├── lib/decor.js       #   装饰引擎（纯库零 hook：值消毒 / 批量成员判定 / 组快照缓存）
+│   │   ├── static/lib/        #   chat.js 聊天室呈现 + decor.js/css 前端渲染器（三端同源）
+│   │   └── acpTemplates/      #   ACP 装饰规则配置面（渐变/图标/头衔特效/自定义出口）
 │   └── nodebb-plugin-odysseia-rules/    # 制度：答题准入 / 120h 缓冲 / 身份组晋升
 │       ├── library.js        #   filter:register.check 服务端强制
 │       └── lib/              #   quiz（题库+一次性token） / promote（cron晋升） / profile（缓冲区API）
@@ -98,7 +101,42 @@ sub.on('publication', ctx => appendMessage(ctx.data));  // bridge 插件广播�
 sub.subscribe();
 ```
 
-消息负载格式（`message.new` / `message.edit` / `message.delete` / `chat.new` 等）见 `plugins/nodebb-plugin-odysseia-bridge/library.js` 的各 hook 实现。
+消息负载格式（`message.new` / `message.edit` / `message.delete` / `chat.new` 等）见 `plugins/nodebb-plugin-odysseia-bridge/library.js` 的各 hook 实现；`message.new` 附带 `username` / `picture` / `decor`（身分组装饰，字段结构见「身分组装饰」一节）身份快照，前端免逐消息查 API。
+
+## 身分组装饰（ACP 可视化配置）
+
+身分组不再只认原生 badge 的展示位——同一用户的装饰在**楼层（首屏/增量）、profile、聊天室（实时/历史）**三端五路同源同款。ACP → 插件 → ΟΔΥΣΣΕΙΑ 装饰即可配置。
+
+### 规则
+
+每条规则 = `组名 + 优先级 + 徽章样式 + 用户名特效 + 自定义出口`：
+
+- **徽章 pill**：渐变底 / 单色底（自动对比度算文字色）/ 图标（FontAwesome）/ 光晕 / 自定义 class
+- **用户名特效**：渐变文字 / 单色 / 加粗 / 光晕 / 自定义 class
+- **custom 出口**：最多 10 组 `string→string`，渲染为 `data-ody-*` 属性，管理员 CSS/JS 自由取用（值服务端已消毒）
+
+同组命中多条规则时按优先级降序全量展示；ody pill 展示的组自动隐藏同 slug 的原生 badge（可逆 class，不删除）。
+
+### 数据流
+
+```
+lib/decor.js（纯库零 hook，可独立单测）
+  ├─ 楼层 SSR/API   ← filter:posts.getUserInfoForPosts → user.odyDecor
+  ├─ profile        ← filter:helpers.getUserDataByUserSlug → userData.odyDecor
+  └─ 聊天室实时     ← onPostSave 广播 message.decor 字段
+static/lib/decor.js（前端渲染器）
+  ├─ 首屏（冷加载/ajaxify）← ajaxify.data.posts 收割 + DOM 扫描注入
+  ├─ 增量（新回复/无限滚动）← action:posts.loaded
+  └─ 聊天气泡     ← window.odyDecor 渲染原语（chat.js 消费）
+```
+
+### 性能与安全护栏
+
+- 值消毒：颜色/类名/渐变/图标全过白名单正则，渲染纯 `style` 属性赋值零 innerHTML，无 XSS 面
+- 查询次数 = 规则组数（`Groups.isMembers` 批量），与页面楼层人数无关
+- 组元数据快照 TTL 5min + settings/group 变更双失效通道
+- 零动画零 transition（管理员可经 custom/className 自行叠加动画）
+- 装饰失败全链路静默降级，绝不阻断发帖/渲染
 
 ## 备份
 
@@ -121,6 +159,7 @@ tar xf bundle.tar   # 得到 dump.gz + uploads.tar.gz
 - [x] 源站 IP 隐藏（Cloudflare 代理 + Caddy 仅响应域名请求）
 - [x] R18 无权者 404 语义：Centrifugo 拒订 + category 组权限双保险
 - [x] 内部 API 全部 X-Internal-Token，仅 compose 内网可达
+- [x] 装饰配置全字段消毒（颜色/类名/渐变白名单正则，custom 值截断，零 innerHTML 渲染）
 - [x] 上传走 R2 预签名直传，服务器零中转带宽
 - [x] 备份 age 公钥加密，私钥离线
 - [x] Caddy 关闭访问日志（隐私优先）
