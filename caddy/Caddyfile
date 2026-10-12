@@ -1,0 +1,46 @@
+# ΟΔΥΣΣΕIA 反向代理
+# 路由表：
+#   /connection/*   → Centrifugo WS 客户端端点
+#   /centrifugo/*   → Centrifugo 管理界面
+#   /bff/*          → BFF 聚合层（token / 订阅代理回调 / 预签名 / 消息流）
+#   其余            → NodeBB
+
+{
+	email admin@{$ODYSSEIA_DOMAIN}
+	# 生产再开：servers { protocols h1 h2 h3 }
+}
+
+{$ODYSSEIA_DOMAIN} {
+	encode zstd gzip
+
+	# 隐私优先：关闭访问日志（安全设计 D10）
+	# log { output discard }
+
+	# --- Centrifugo ---
+	@ws {
+		path /connection/*
+		header Connection *Upgrade*
+		header Upgrade websocket
+	}
+	handle @ws {
+		reverse_proxy centrifugo:8000
+	}
+	handle /centrifugo/* {
+		# 管理界面：路径前缀由 Centrifugo 侧 admin.handler_prefix=/centrifugo 提供
+		# （web UI 资源为相对路径引用，API base 取自 window.location.pathname——
+		#   切勿在此加 strip_prefix，会破坏 index.html 的 ./assets 相对解析）
+		# 生产建议：再加 IP 白名单 / forward_auth
+		reverse_proxy centrifugo:8000
+	}
+
+	# --- BFF ---
+	handle /bff/* {
+		uri strip_prefix /bff
+		reverse_proxy bff:3000
+	}
+
+	# --- NodeBB（SSR 页面 + API + Socket.IO 后备通道） ---
+	handle {
+		reverse_proxy nodebb:4567
+	}
+}

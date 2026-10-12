@@ -1,0 +1,13 @@
+{
+  "name": "nodebb-plugin-odysseia-rules",
+  "version": "0.1.0",
+  "description": "ΟΔΥΣΣΕΙΑ 制度插件：答题准入 / 120h 新人缓冲区 / 身份组自动晋升 / 内部 profile API",
+  "main": "library.js",
+  "license": "MIT",
+  "nbbpm": {
+    "compatibility": "^4.0.0"
+  },
+  "dependencies": {
+    "node-cron": "^4.6.0"
+  }
+}

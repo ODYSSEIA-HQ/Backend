@@ -1,0 +1,20 @@
+{
+  "id": "nodebb-plugin-odysseia-bridge",
+  "library": "library.js",
+  "scripts": [
+    "static/lib/chat.js"
+  ],
+  "css": [
+    "static/lib/chat.css"
+  ],
+  "hooks": [
+    { "hook": "static:app.load", "method": "init" },
+    { "hook": "action:post.save", "method": "onPostSave" },
+    { "hook": "action:post.edit", "method": "onPostEdit" },
+    { "hook": "action:post.delete", "method": "onPostDelete" },
+    { "hook": "action:post.restore", "method": "onPostRestore" },
+    { "hook": "action:posts.purge", "method": "onPostsPurge" },
+    { "hook": "action:topics.purge", "method": "onTopicsPurge" },
+    { "hook": "filter:messaging.notify", "method": "onChatNotify" }
+  ]
+}

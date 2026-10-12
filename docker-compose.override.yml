@@ -1,0 +1,53 @@
+# ============================================================
+# 本地演示叠加层（docker compose 自动加载）
+# 效果：http://localhost:8080 直接访问
+#   - 纯 HTTP（免 TLS 信任配置）
+#   - Mongo / Redis 免认证（容器内网）
+#   - 内存缩量（适配开发机）
+#   - NodeBB 首装向导全自动（admin / odysseia-demo）
+# 生产部署：删除本文件即可回到生产编排
+# ============================================================
+
+services:
+  caddy:
+    environment:
+      # http:// 前缀强制纯 HTTP，Caddy 不做证书签发与重定向
+      ODYSSEIA_DOMAIN: http://localhost
+    ports: !override
+      - "8080:80"
+
+  nodebb:
+    environment: !override
+      # 官方 install.js envConfMap 只认 NODEBB_URL/PORT/ADMIN_*/DB_* 系列变量名
+      # config.json 缺失时 entrypoint 自动跑 nodebb install，
+      # checkSetupFlagEnv 检测到上述 env 即全自动完成安装（无需 SETUP 开关，无死循环）
+      NODEBB_URL: http://localhost:8080
+      NODEBB_PORT: "4567"
+      NODEBB_ADMIN_USERNAME: admin
+      NODEBB_ADMIN_PASSWORD: odysseia-demo
+      NODEBB_ADMIN_EMAIL: admin@localhost
+      NODEBB_DB: mongo
+      NODEBB_DB_HOST: mongo
+      NODEBB_DB_PORT: "27017"
+      NODEBB_DB_NAME: odysseia
+      # 演示 Mongo 免认证，故不传 DB_USER/DB_PASSWORD；secret 由 setup 自动生成
+      # 桥接插件读取
+      CENTRIFUGO_API_URL: http://centrifugo:8000/api
+      CENTRIFUGO_HTTP_API_KEY: ${CENTRIFUGO_HTTP_API_KEY}
+      MEILI_HOST: http://meilisearch:7700
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY}
+      # 制度插件读取
+      ODYSSEIA_INTERNAL_TOKEN: ${ODYSSEIA_INTERNAL_TOKEN}
+
+  mongo:
+    # 演示：免认证 + 1G 缓存
+    command: !override ["--wiredTigerCacheSizeGB", "1"]
+    environment: !override {}
+
+  redis:
+    # 演示：免密 + 256mb
+    command: !override ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+
+  meilisearch:
+    environment:
+      MEILI_MAX_INDEXING_MEMORY: "1Gb"

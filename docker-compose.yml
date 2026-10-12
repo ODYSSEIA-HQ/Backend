@@ -1,0 +1,158 @@
+# ΟΔΥΣΣΕΙΑ 单机全栈编排（64G 宿主机）
+# 组件：Caddy / NodeBB(+自研插件) / Centrifugo / Meilisearch / MongoDB / Redis / BFF
+# 启动前：cp .env.example .env 并填好全部密钥
+# 启动：docker compose up -d --build
+
+name: odysseia
+
+services:
+  # ---------- 反向代理 ----------
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    environment:
+      ODYSSEIA_DOMAIN: ${ODYSSEIA_DOMAIN}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - nodebb
+      - bff
+      - centrifugo
+
+  # ---------- 论坛主体（NodeBB v4 + 两个自研插件） ----------
+  nodebb:
+    build:
+      context: .
+      dockerfile: nodebb/Dockerfile
+    restart: unless-stopped
+    environment:
+      # ---- 无头首装（实证：nodebb/upstream/NodeBB/src/install.js envConfMap）----
+      # 仅当 SETUP 非空时，entrypoint 执行 nodebb setup（强制重新安装场景）；
+      # 日常启动 SETUP 留空，config.json 缺失时 entrypoint 也会自动跑 nodebb install，
+      # 由下方 NODEBB_* 环境变量（install.js envConfMap）完成全自动首装
+      SETUP: ${NODEBB_SETUP:-}
+      NODEBB_URL: https://${ODYSSEIA_DOMAIN}
+      NODEBB_ADMIN_USERNAME: ${NODEBB_ADMIN_USERNAME:-admin}
+      NODEBB_ADMIN_PASSWORD: ${NODEBB_ADMIN_PASSWORD:?请在 .env 设置 NODEBB_ADMIN_PASSWORD}
+      NODEBB_ADMIN_EMAIL: ${NODEBB_ADMIN_EMAIL:?请在 .env 设置 NODEBB_ADMIN_EMAIL}
+      NODEBB_DB: mongo
+      NODEBB_DB_HOST: mongo
+      NODEBB_DB_PORT: "27017"
+      NODEBB_DB_USER: ${MONGO_INITDB_ROOT_USERNAME}
+      NODEBB_DB_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
+      NODEBB_DB_NAME: ${MONGO_INITDB_DATABASE}
+      # secret 无需环境变量：setup 自动生成并写入 config.json
+      # ---- 桥接插件读取 ----
+      CENTRIFUGO_API_URL: http://centrifugo:8000/api
+      CENTRIFUGO_HTTP_API_KEY: ${CENTRIFUGO_HTTP_API_KEY}
+      MEILI_HOST: http://meilisearch:7700
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY}
+      # 制度插件读取（内部通信 token）
+      ODYSSEIA_INTERNAL_TOKEN: ${ODYSSEIA_INTERNAL_TOKEN}
+    volumes:
+      # 官方镜像 VOLUME 声明：本体在 /usr/src/app/（不含 nodebb/ 子目录）
+      - nodebb_uploads:/usr/src/app/public/uploads
+      # config.json / install_hash / 运行时 package.json 所在（entrypoint CONFIG_DIR）
+      - nodebb_config:/opt/config
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  # ---------- 实时网关 ----------
+  centrifugo:
+    image: centrifugo/centrifugo:v6
+    restart: unless-stopped
+    command: centrifugo -c /etc/centrifugo/config.json
+    environment:
+      # 环境变量覆盖 config.json 中对应字段：CENTRIFUGO_ + 大写路径（. → _）
+      # client.token.hmac_secret_key / http_api.key / admin.password / admin.secret
+      # （admin.enabled 与 handler_prefix 已写在 config.json；secret 用于签发 admin token，
+      #   v6 要求 password 与 secret 同时设置，否则 /admin/auth 直接 400）
+      CENTRIFUGO_CLIENT_TOKEN_HMAC_SECRET_KEY: ${CENTRIFUGO_CLIENT_TOKEN_HMAC_SECRET_KEY}
+      CENTRIFUGO_HTTP_API_KEY: ${CENTRIFUGO_HTTP_API_KEY}
+      CENTRIFUGO_ADMIN_PASSWORD: ${CENTRIFUGO_ADMIN_PASSWORD}
+      CENTRIFUGO_ADMIN_SECRET: ${CENTRIFUGO_ADMIN_SECRET}
+    volumes:
+      - ./centrifugo/config.json:/etc/centrifugo/config.json:ro
+    ulimits:
+      # fd 上限=内核单进程默认天花板（fs.nr_open=1048576），每个 WS 连接占 1 fd；
+      # 上限本身不预留资源，实际内存由连接数决定（~10KB/连接）
+      nofile:
+        soft: 1048576
+        hard: 1048576
+    depends_on:
+      - bff # subscribe proxy 指向 BFF
+
+  # ---------- 全文搜索 ----------
+  meilisearch:
+    image: getmeili/meilisearch:v1.12
+    restart: unless-stopped
+    environment:
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY}
+      MEILI_ENV: production
+      MEILI_NO_ANALYTICS: "true"
+      MEILI_MAX_INDEXING_MEMORY: "8Gb"
+      MEILI_HTTP_PAYLOAD_SIZE_LIMIT: "104857600"
+    volumes:
+      - meili_data:/meili_data
+
+  # ---------- 数据库 ----------
+  mongo:
+    image: mongo:8
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
+      MONGO_INITDB_DATABASE: ${MONGO_INITDB_DATABASE}
+    command: ["--wiredTigerCacheSizeGB", "12"]
+    healthcheck:
+      # 防止 nodebb setup 在 mongo 首次初始化 root 用户完成前抢跑
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    volumes:
+      - mongo_data:/data/db
+      - ./scripts:/scripts:ro # 备份脚本用
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--maxmemory", "2gb", "--maxmemory-policy", "allkeys-lru", "--requirepass", "${REDIS_PASSWORD}"]
+    volumes:
+      - redis_data:/data
+
+  # ---------- BFF 聚合层 ----------
+  bff:
+    build:
+      context: ./bff
+    restart: unless-stopped
+    environment:
+      NODEBB_URL: http://nodebb:4567
+      CENTRIFUGO_CLIENT_TOKEN_HMAC_SECRET_KEY: ${CENTRIFUGO_CLIENT_TOKEN_HMAC_SECRET_KEY}
+      ODYSSEIA_INTERNAL_TOKEN: ${ODYSSEIA_INTERNAL_TOKEN}
+      R2_ENDPOINT: ${R2_ENDPOINT}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY}
+      R2_BUCKET_MEDIA: ${R2_BUCKET_MEDIA}
+      R2_BUCKET_R18: ${R2_BUCKET_R18}
+    depends_on:
+      - nodebb
+
+volumes:
+  caddy_data:
+  caddy_config:
+  nodebb_uploads:
+  nodebb_config:
+  mongo_data:
+  redis_data:
+  meili_data:

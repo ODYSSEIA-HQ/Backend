@@ -1,0 +1,13 @@
+{
+  "name": "nodebb-plugin-odysseia-bridge",
+  "version": "0.1.0",
+  "description": "ΟΔΥΣΣΕΙΑ 桥接插件：NodeBB 事件 → Centrifugo 实时广播 + Meilisearch 索引同步 + 频道订阅鉴权内部 API",
+  "main": "library.js",
+  "license": "MIT",
+  "nbbpm": {
+    "compatibility": "^4.0.0"
+  },
+  "dependencies": {
+    "meilisearch": "^0.44.0"
+  }
+}

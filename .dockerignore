@@ -1,0 +1,8 @@
+# 防止宿主机产物进入镜像（nodebb 镜像 build context = 项目根目录）
+**/node_modules
+.env
+scripts/
+caddy/
+centrifugo/
+# 上游参考源码（带 .git 的外部仓库副本，按组件归档，不进任何构建上下文）
+**/upstream/

@@ -1,0 +1,222 @@
+/**
+ * ΟΔΥΣΣΕΙΑ 聊天室视觉层（bridge 插件前端）
+ *
+ * 双渲染统一：
+ *   .ody-bubble              —— chat.js 实时插入的轻量气泡（Centrifugo 通道）
+ *   [component="post"]       —— NodeBB 原生楼层（Socket.IO/SSR 通道），气泡化压缩
+ * 两条通道渲染的消息视觉一致（按 pid 去重保证不重复出现）
+ *
+ * body.ody-chatmode 仅在 topic 页激活（chat.js enterTopic 时添加）
+ */
+
+/* ============ 聊天列宽（居中窄列，聊天室语义） ============ */
+
+body.ody-chatmode [component="topic"] {
+	max-width: 860px;
+	margin: 0 auto;
+}
+
+/* ============ 自建气泡（Centrifugo 实时通道） ============ */
+
+.ody-bubble {
+	display: flex;
+	align-items: flex-start;
+	gap: 12px;
+	margin: 6px 0;
+	padding: 8px 12px;
+	border-radius: 12px;
+	background: var(--ody-bg, #f2f3f5);
+	animation: ody-in 160ms ease-out;
+}
+
+.ody-bubble.ody-self {
+	flex-direction: row-reverse;
+	background: var(--ody-bg-self, #dbeafe);
+}
+
+.ody-avatar-wrap { flex: 0 0 auto; }
+
+.ody-avatar {
+	width: 36px;
+	height: 36px;
+	border-radius: 50%;
+	object-fit: cover;
+	display: block;
+}
+
+.ody-avatar-empty {
+	background: linear-gradient(135deg, #94a3b8, #64748b);
+	color: #fff;
+	font-size: 16px;
+	font-weight: 600;
+	line-height: 36px;
+	text-align: center;
+}
+
+.ody-body {
+	min-width: 0; /* 让长文本正确换行 */
+	flex: 1 1 auto;
+}
+
+.ody-meta {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	font-size: 12px;
+	color: var(--ody-muted, #6b7280);
+	margin-bottom: 2px;
+}
+
+.ody-bubble.ody-self .ody-meta {
+	flex-direction: row-reverse;
+}
+
+.ody-user {
+	font-weight: 600;
+	color: var(--ody-fg, #374151);
+	font-size: 13px;
+}
+
+.ody-floor {
+	margin-left: auto;
+	font-variant-numeric: tabular-nums;
+	opacity: .7;
+}
+
+.ody-bubble.ody-self .ody-floor { margin-left: 0; margin-right: auto; }
+
+.ody-content {
+	font-size: 14.5px;
+	line-height: 1.55;
+	white-space: pre-wrap;
+	word-break: break-word;
+	color: var(--ody-fg, #1f2937);
+}
+
+.ody-bubble.ody-self .ody-content { text-align: right; }
+
+.ody-bubble.ody-deleted .ody-content {
+	text-decoration: line-through;
+	opacity: .5;
+}
+
+.ody-bubble.ody-edited .ody-meta::after {
+	content: "（已编辑）";
+	opacity: .6;
+	font-size: 11px;
+}
+
+@keyframes ody-in {
+	from { opacity: 0; transform: translateY(6px); }
+	to { opacity: 1; transform: none; }
+}
+
+/* ============ NodeBB 原生楼层气泡化（SSR / Socket.IO 通道） ============ */
+
+body.ody-chatmode [component="post"] {
+	margin: 6px 0;
+	border: 0;
+	border-radius: 12px;
+	background: var(--ody-bg, #f2f3f5);
+	padding: 10px 14px;
+	transition: background .2s;
+}
+
+body.ody-chatmode [component="post"].ody-self {
+	background: var(--ody-bg-self, #dbeafe);
+	border-left: 3px solid var(--ody-accent, #3b82f6);
+}
+
+body.ody-chatmode [component="post"] .post-header {
+	margin-bottom: 4px;
+}
+
+body.ody-chatmode [component="post"] [component="post/content"] {
+	font-size: 14.5px;
+	line-height: 1.55;
+}
+
+body.ody-chatmode [component="post"] .post-footer .post-tools {
+	opacity: 0;
+	transition: opacity .15s;
+}
+
+body.ody-chatmode [component="post"]:hover .post-tools {
+	opacity: 1;
+}
+
+body.ody-chatmode [component="post"].ody-deleted [component="post/content"] {
+	text-decoration: line-through;
+	opacity: .5;
+}
+
+/* ============ 聊天室状态栏（typing / 在线 / 新消息） ============ */
+
+.ody-bar {
+	position: sticky;
+	bottom: 0;
+	z-index: 10;
+	display: flex;
+	align-items: center;
+	gap: 16px;
+	min-height: 34px;
+	padding: 4px 14px;
+	margin: 8px auto 0;
+	max-width: 860px;
+	width: 100%;
+	background: var(--ody-bar-bg, rgba(255, 255, 255, .92));
+	backdrop-filter: blur(6px);
+	border: 1px solid var(--ody-border, #e5e7eb);
+	border-radius: 10px 10px 0 0;
+	font-size: 12.5px;
+	color: var(--ody-muted, #6b7280);
+	box-sizing: border-box;
+}
+
+.ody-typing {
+	color: var(--ody-accent, #3b82f6);
+	font-weight: 500;
+	min-height: 1em;
+}
+
+.ody-newmsg {
+	margin-left: auto;
+	border: 0;
+	border-radius: 999px;
+	background: var(--ody-accent, #3b82f6);
+	color: #fff;
+	font-size: 12.5px;
+	font-weight: 600;
+	padding: 4px 14px;
+	cursor: pointer;
+	box-shadow: 0 2px 8px rgba(0, 0, 0, .18);
+}
+
+.ody-newmsg:hover { filter: brightness(1.08); }
+
+/* ============ 历史无限加载（向上滚动） ============ */
+
+.ody-histload {
+	max-width: 860px;
+	margin: 0 auto;
+	padding: 8px 0;
+	font-size: 12px;
+	text-align: center;
+	color: var(--ody-muted, #6b7280);
+}
+
+/* 历史气泡内容来自 NodeBB 服务端渲染 HTML（已消毒），
+   关闭 pre-wrap 避免块级标签（<p>/<blockquote>…）之间出现多倍空行 */
+.ody-bubble.ody-rich .ody-content {
+	white-space: normal;
+}
+
+/* ============ 深色主题跟随（NodeBB skin 变量缺失时的兜底） ============ */
+
+body[theme="dark"] .ody-bubble,
+body[theme="dark"] [component="post"] {
+	--ody-bg: #2a2d33;
+	--ody-bg-self: #1e3a5f;
+	--ody-fg: #e5e7eb;
+	--ody-muted: #9ca3af;
+}
