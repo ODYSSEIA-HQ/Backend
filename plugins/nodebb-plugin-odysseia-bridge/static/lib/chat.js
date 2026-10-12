@@ -207,10 +207,16 @@
 	function onNewMessage(msg) {
 		if (!msg || !msg.pid) return;
 
-		// 身份缓存（uid → username/picture，后续 edit 等事件复用）
-		if (msg.uid && (msg.username || msg.picture)) {
-			state.users[msg.uid] = { username: msg.username, picture: msg.picture };
-		}
+		// 身份+装饰缓存（uid → username/picture/decor；decor 由服务端 onPostSave 附带，
+		// 后续 edit 等事件与气泡渲染复用；decor===null 表示"确认无装饰"，undefined 才走降级）
+	if (msg.uid) {
+		var prev = state.users[msg.uid] || {};
+		state.users[msg.uid] = {
+			username: msg.username || prev.username,
+			picture: msg.picture || prev.picture,
+			decor: (msg.decor !== undefined) ? msg.decor : prev.decor,
+		};
+	}
 
 		var $topic = $('[component="topic"]');
 		if (!$topic.length) return;
@@ -220,6 +226,21 @@
 
 		$topic.append(buildBubble(msg));
 		maybeScroll();
+	}
+
+	/**
+	 * 双通道去重（原生→自建方向）：原生楼层 DOM 插入完成（action:posts.loaded，含
+	 * event:new_post / 无限滚动两路）时移除同 pid 的自建气泡。反向已由 onNewMessage
+	 * 的全局 [data-pid] 去重覆盖——两条通道任一先到都不双份。
+	 * （原生 removeAlreadyAddedPosts 只查 [component="post"]，不认 .ody-bubble，
+	 *  不在此补齐则 Centrifugo 先到时必双份渲染）
+	 */
+	function onNativePostsLoaded(posts) {
+		(posts || []).forEach(function (p) {
+			if (p && p.pid) {
+				$('.ody-bubble[data-pid="' + Number(p.pid) + '"]').remove();
+			}
+		});
 	}
 
 	/** 气泡 DOM：content 只走 textContent（XSS 防御，富文本由 NodeBB 原生层渲染） */
@@ -250,6 +271,19 @@
 		$b.find('.ody-time').text(time);
 		$b.find('.ody-floor').text('#' + (Number(msg.index) || ''));
 		$b.find('.ody-content').text(String(msg.content || ''));
+
+		// 身分组装饰：与楼层 / profile 同源同款（渲染原语来自 static/lib/decor.js 的 window.odyDecor）
+		var decor = who.decor !== undefined ? who.decor
+			: (window.odyDecor ? window.odyDecor.getDecor(msg.uid) : undefined);
+		if (decor && window.odyDecor) {
+			if (decor.name) window.odyDecor.applyNameFx($b.find('.ody-user')[0], decor.name);
+			if (decor.badges && decor.badges.length) {
+				decor.badges.forEach(function (bd) {
+					var pill = window.odyDecor.renderPill(bd);
+					if (pill) $b.find('.ody-time').before(pill); // 依次插在 time 前，保持 badge 顺序
+				});
+			}
+		}
 		return $b;
 	}
 
@@ -334,7 +368,15 @@
 		posts.forEach(function (p) {
 			if (!p || !p.pid) return;
 			if ($('[data-pid="' + Number(p.pid) + '"]').length) return; // 去重（与 onNewMessage 同款）
-			if (p.user) state.users[p.uid] = { username: p.user.username, picture: p.user.picture };
+			// 历史页 user 走 getUserInfoForPosts 路径，p.user.odyDecor 即服务端注入的装饰
+			if (p.user) {
+				var prev = state.users[p.uid] || {};
+				state.users[p.uid] = {
+					username: p.user.username || prev.username,
+					picture: p.user.picture || prev.picture,
+					decor: (p.user.odyDecor !== undefined) ? p.user.odyDecor : prev.decor,
+				};
+			}
 			$anchor.before(buildHistoryBubble(p));
 			added++;
 		});
@@ -493,6 +535,9 @@
 
 		whenHooksReady(function () {
 			hooks.on('action:ajaxify.end', onAjaxifyEnd);
+			hooks.on('action:posts.loaded', function (data) {
+				onNativePostsLoaded((data && data.posts) || []);
+			});
 			$(window).on('scroll', onWindowScroll); // 滚顶 → 无限加载历史
 			// typing：topic 页任意输入框（快速回复/搜索框排除不了的代价可接受，节流兜底）
 			$(document).on('input', 'textarea, input[type="text"]', function () {

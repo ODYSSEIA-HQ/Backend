@@ -106,6 +106,21 @@ body.ody-chatmode [component="topic"] {
 	font-size: 11px;
 }
 
+/* ============ 身分组装饰适配（pill 渲染原语在 decor.css，此处只做字号上下文适配） ============ */
+
+/* 气泡 meta 为 12px 上下文，decor.css 的 .78em（≈9.4px）会过小，直接定字号 */
+.ody-meta .ody-pill {
+	font-size: 11px;
+	padding: .1em .5em;
+}
+
+/* 聊天模式下的原生楼层（post-header 内）同理 */
+body.ody-chatmode .post-header .ody-pill {
+	font-size: 11.5px;
+}
+
+/* self 气泡 meta 为 row-reverse，pill 顺序随之镜像 —— 与用户名相邻即可，无需特殊处理 */
+
 @keyframes ody-in {
 	from { opacity: 0; transform: translateY(6px); }
 	to { opacity: 1; transform: none; }

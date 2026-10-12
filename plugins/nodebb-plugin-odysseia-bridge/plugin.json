@@ -1,11 +1,14 @@
 {
   "id": "nodebb-plugin-odysseia-bridge",
   "library": "library.js",
+  "acpTemplates": "acpTemplates",
   "scripts": [
-    "static/lib/chat.js"
+    "static/lib/chat.js",
+    "static/lib/decor.js"
   ],
   "css": [
-    "static/lib/chat.css"
+    "static/lib/chat.css",
+    "static/lib/decor.css"
   ],
   "hooks": [
     { "hook": "static:app.load", "method": "init" },
@@ -15,6 +18,12 @@
     { "hook": "action:post.restore", "method": "onPostRestore" },
     { "hook": "action:posts.purge", "method": "onPostsPurge" },
     { "hook": "action:topics.purge", "method": "onTopicsPurge" },
-    { "hook": "filter:messaging.notify", "method": "onChatNotify" }
+    { "hook": "filter:messaging.notify", "method": "onChatNotify" },
+    { "hook": "filter:posts.getUserInfoForPosts", "method": "onUserInfoForPosts" },
+    { "hook": "filter:helpers.getUserDataByUserSlug", "method": "onUserProfile" },
+    { "hook": "action:group.update", "method": "onGroupUpdate" },
+    { "hook": "action:group.rename", "method": "onGroupRename" },
+    { "hook": "action:settings.set", "method": "onSettingsSet" },
+    { "hook": "filter:admin.header.build", "method": "onAdminHeader" }
   ]
 }

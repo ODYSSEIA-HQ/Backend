@@ -1,0 +1,79 @@
+/**
+ * ΟΔΥΣΣΕΙΑ 身分组装饰 · 样式
+ *
+ * 性能护栏（有意为之的克制）：
+ *   - 零 keyframes / 零 transition / 零 filter：所有特效均为静态绘制，
+ *     管理员需要动态特效时经 custom/className 出口自行叠加（责任与开销归属管理员）
+ *   - 渐变文字 background-clip:text 走 GPU 合成；box-shadow/text-shadow 为静态光晕
+ */
+
+/* ---------- badge pill（楼层 / profile / 聊天室三端同款） ---------- */
+
+.ody-pill {
+	display: inline-flex;
+	align-items: center;
+	gap: .25em;
+	padding: .1em .55em;
+	border-radius: 999px; /* 胶囊形态，与原生 badge 的直角矩形成视觉区隔 */
+	line-height: 1.6;
+	font-size: .78em;
+	font-weight: 600;
+	letter-spacing: .02em;
+	max-width: 160px;
+	white-space: nowrap;
+	vertical-align: middle;
+	text-decoration: none;
+	/* 底色/前景/光晕由服务端消毒后经 inline style 注入，此处只定骨架 */
+}
+
+a.ody-pill:hover,
+a.ody-pill:focus {
+	text-decoration: none;
+	filter: brightness(1.08); /* 静态态一档，无过渡 */
+	outline: none;
+}
+
+.ody-pill > i.fa {
+	font-size: .9em;
+	line-height: 1;
+	flex: none;
+}
+
+.ody-pill-text {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* pill 组容器：楼层（span，随行内 flex 排布） */
+.ody-pills {
+	display: inline-flex;
+	align-items: center;
+	gap: .25rem;
+	flex-wrap: wrap;
+	min-width: 0;
+}
+
+/* profile 版：块级居中（对齐 Persona profile 头部布局） */
+.ody-pills-profile {
+	display: flex;
+	justify-content: center;
+	gap: .25rem;
+	flex-wrap: wrap;
+	margin-bottom: .75rem;
+}
+
+/* ---------- 用户名特效 ---------- */
+
+/* 渐变文字：inline style 提供 backgroundImage，此处提供裁剪机制（标准 + webkit 前缀） */
+.ody-name-grad {
+	-webkit-background-clip: text;
+	background-clip: text;
+	-webkit-text-fill-color: transparent;
+	color: transparent; /* 老内核降级：无裁剪时至少文字底色接近渐变首色 */
+}
+
+/* ---------- 原生 badge 去重（可逆隐藏，非移除） ---------- */
+
+.ody-native-hidden {
+	display: none !important;
+}

@@ -20,6 +20,7 @@
 const { publish } = require('./lib/centrifugo');
 const search = require('./lib/search');
 const internalApi = require('./lib/internal');
+const decor = require('./lib/decor');
 
 /** 防御式加载 NodeBB 内部模块（4.x 模块路径以 src/ 为准） */
 function loadModule(...paths) {
@@ -62,6 +63,15 @@ plugin.onPostSave = async function (params) {
 			/* 身份补齐失败不影响广播主体 */
 		}
 	}
+	// 身分组装饰实时同步：新消息气泡立刻带 pill/用户名特效（前端同时缓存 uid→decor 兜底离线补发）
+	let decorData = null;
+	if (postData.uid) {
+		try {
+			decorData = await decor.decorateOne(postData.uid);
+		} catch (e) {
+			/* 装饰失败降级为无 pill，不阻断广播 */
+		}
+	}
 	await publish(`topic:${postData.tid}`, {
 		type: 'message.new',
 		message: {
@@ -70,6 +80,7 @@ plugin.onPostSave = async function (params) {
 			uid: postData.uid,
 			username: who.username,
 			picture: who.picture,
+			decor: decorData,
 			content: postData.content,
 			timestamp: postData.timestamp,
 			index: postData.index, // 楼层号，前端 "#1234" 定位用
@@ -159,6 +170,69 @@ plugin.onChatNotify = async function (data) {
 		}
 	}
 	return data; // filter hook 契约：原样放行
+};
+
+// ---------- 身分组装饰接线（引擎 = lib/decor.js，纯库零 hook） ----------
+// 解耦点：本文件只做「hook payload ↔ 引擎调用」的转发；装饰规则/消毒/缓存/批量查询
+// 全部收敛在 lib/decor.js，与 NodeBB hook 体系互不感知（可独立单测、可整体卸除）
+
+/** filter:posts.getUserInfoForPosts。payload = { users: [...] }（src/posts/user.js 实证）
+ *  楼层 / 回 replies / 用户帖子页共用此路径：一次批量查询注入全页 user.odyDecor，
+ *  查询次数 = 规则组数（与楼层人数无关，性能护栏） */
+plugin.onUserInfoForPosts = async function (data) {
+	if (!data || !Array.isArray(data.users) || !data.users.length) return data;
+	try {
+		const decorMap = await decor.decorateUsers(data.users.map(u => u && u.uid));
+		data.users.forEach(u => {
+			if (u && decorMap[u.uid]) u.odyDecor = decorMap[u.uid];
+		});
+	} catch (e) {
+		console.error('[odysseia-decor] 楼层装饰注入失败', e.message); // 装饰失败不阻断楼层渲染
+	}
+	return data;
+};
+
+/** filter:helpers.getUserDataByUserSlug。payload = { userData, callerUID, query }（src/controllers/accounts/helpers.js 实证）
+ *  profile 页注入 userData.odyDecor——与楼层同源同构，保证「同一用户处处同款」 */
+plugin.onUserProfile = async function (data) {
+	if (!data || !data.userData || !data.userData.uid) return data;
+	try {
+		const decorData = await decor.decorateOne(data.userData.uid);
+		if (decorData) data.userData.odyDecor = decorData;
+	} catch (e) {
+		console.error('[odysseia-decor] profile 装饰注入失败', e.message);
+	}
+	return data;
+};
+
+/** 缓存失效通道①：组元数据（labelColor / icon / userTitle）变更 → 组快照重取 */
+plugin.onGroupUpdate = function () {
+	decor.invalidate();
+};
+
+/** 组改名 → 旧 groupName 规则自然失配（组不存在即不命中），失效后快照即自愈 */
+plugin.onGroupRename = function () {
+	decor.invalidate();
+};
+
+/** 缓存失效通道②：action:settings.set。payload = { plugin, settings, quiet }（src/meta/settings.js 实证）
+ *  仅本插件配置变更时失效，避免无关插件保存触发重查询风暴 */
+plugin.onSettingsSet = function (data) {
+	if (data && data.plugin === 'odysseia-decor') {
+		decor.invalidate();
+	}
+};
+
+/** filter:admin.header.build。payload = { plugins: [], authentication: [] }（src/middleware/render.js 实证） */
+plugin.onAdminHeader = function (data) {
+	if (data && Array.isArray(data.plugins)) {
+		data.plugins.push({
+			route: '/plugins/odysseia-decor',
+			icon: 'fa-paint-brush',
+			name: 'ΟΔΥΣΣΕΙΑ 装饰',
+		});
+	}
+	return data;
 };
 
 module.exports = plugin;
