@@ -1,7 +1,16 @@
 # ΟΔΥΣΣΕΙΑ 单机全栈编排（64G 宿主机）
 # 组件：Caddy / NodeBB(+自研插件) / Centrifugo / Meilisearch / MongoDB / Redis / BFF
-# 启动前：cp .env.example .env 并填好全部密钥
+# 启动前：cp .env.example .env 并填好全部密钥（所有密钥均 :? 强制校验，缺失即拒绝启动）
 # 启动：docker compose up -d --build
+#
+# 网络分段（安全设计）：
+#   edge    仅 Caddy——公网入口边界（唯一 ports 发布者）
+#   app     应用层互访：caddy 反代上游、nodebb→centrifugo/meili、centrifugo→bff 代理、
+#           prometheus 跨网抓取 app 层 /metrics
+#   data    internal 无外网出口：mongo / redis + 各自 exporter
+#   monitor internal 无外网出口：prometheus / grafana / cadvisor
+#   internal:true 网络不提供外网路由；公网暴露面由 ports 唯一决定（仅 caddy 80/443）
+#   注：compose 的 ${VAR:?} 插值发生在各文件合并之前，故 dev 叠加层也要求 .env 齐备
 
 name: odysseia
 
@@ -15,11 +24,14 @@ services:
       - "443:443"
       - "443:443/udp" # HTTP/3
     environment:
-      ODYSSEIA_DOMAIN: ${ODYSSEIA_DOMAIN}
+      ODYSSEIA_DOMAIN: ${ODYSSEIA_DOMAIN:?请在 .env 设置 ODYSSEIA_DOMAIN}
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+    networks:
+      - edge
+      - app
     depends_on:
       nodebb:
         condition: service_healthy
@@ -47,22 +59,25 @@ services:
       NODEBB_DB: mongo
       NODEBB_DB_HOST: mongo
       NODEBB_DB_PORT: "27017"
-      NODEBB_DB_USER: ${MONGO_INITDB_ROOT_USERNAME}
-      NODEBB_DB_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
-      NODEBB_DB_NAME: ${MONGO_INITDB_DATABASE}
+      NODEBB_DB_USER: ${MONGO_INITDB_ROOT_USERNAME:?请在 .env 设置 MONGO_INITDB_ROOT_USERNAME}
+      NODEBB_DB_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:?请在 .env 设置 MONGO_INITDB_ROOT_PASSWORD}
+      NODEBB_DB_NAME: ${MONGO_INITDB_DATABASE:?请在 .env 设置 MONGO_INITDB_DATABASE}
       # secret 无需环境变量：setup 自动生成并写入 config.json
       # ---- 桥接插件读取 ----
       CENTRIFUGO_API_URL: http://centrifugo:8000/api
-      CENTRIFUGO_HTTP_API_KEY: ${CENTRIFUGO_HTTP_API_KEY}
+      CENTRIFUGO_HTTP_API_KEY: ${CENTRIFUGO_HTTP_API_KEY:?请在 .env 设置 CENTRIFUGO_HTTP_API_KEY}
       MEILI_HOST: http://meilisearch:7700
-      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY}
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:?请在 .env 设置 MEILI_MASTER_KEY}
       # 制度插件读取（内部通信 token）
-      ODYSSEIA_INTERNAL_TOKEN: ${ODYSSEIA_INTERNAL_TOKEN}
+      ODYSSEIA_INTERNAL_TOKEN: ${ODYSSEIA_INTERNAL_TOKEN:?请在 .env 设置 ODYSSEIA_INTERNAL_TOKEN}
     volumes:
       # 官方镜像 VOLUME 声明：本体在 /usr/src/app/（不含 nodebb/ 子目录）
       - nodebb_uploads:/usr/src/app/public/uploads
       # config.json / install_hash / 运行时 package.json 所在（entrypoint CONFIG_DIR）
       - nodebb_config:/opt/config
+    networks:
+      - app
+      - data
     mem_limit: 8g
     healthcheck:
       # HTTP 起不来即 unhealthy（覆盖 NodeBB 内部崩坏；mongo/redis 故障由 depends_on 前置挡）
@@ -92,15 +107,21 @@ services:
       # client.token.hmac_secret_key / http_api.key / admin.password / admin.secret
       # （admin.enabled 与 handler_prefix 已写在 config.json；secret 用于签发 admin token，
       #   v6 要求 password 与 secret 同时设置，否则 /admin/auth 直接 400）
-      CENTRIFUGO_CLIENT_TOKEN_HMAC_SECRET_KEY: ${CENTRIFUGO_CLIENT_TOKEN_HMAC_SECRET_KEY}
-      CENTRIFUGO_HTTP_API_KEY: ${CENTRIFUGO_HTTP_API_KEY}
-      CENTRIFUGO_ADMIN_PASSWORD: ${CENTRIFUGO_ADMIN_PASSWORD}
-      CENTRIFUGO_ADMIN_SECRET: ${CENTRIFUGO_ADMIN_SECRET}
+      CENTRIFUGO_CLIENT_TOKEN_HMAC_SECRET_KEY: ${CENTRIFUGO_CLIENT_TOKEN_HMAC_SECRET_KEY:?请在 .env 设置 CENTRIFUGO_CLIENT_TOKEN_HMAC_SECRET_KEY}
+      CENTRIFUGO_HTTP_API_KEY: ${CENTRIFUGO_HTTP_API_KEY:?请在 .env 设置 CENTRIFUGO_HTTP_API_KEY}
+      CENTRIFUGO_ADMIN_PASSWORD: ${CENTRIFUGO_ADMIN_PASSWORD:?请在 .env 设置 CENTRIFUGO_ADMIN_PASSWORD}
+      CENTRIFUGO_ADMIN_SECRET: ${CENTRIFUGO_ADMIN_SECRET:?请在 .env 设置 CENTRIFUGO_ADMIN_SECRET}
       # 订阅代理共享密钥：v6.3+ 以 ${CENTRIFUGO_VAR_*} 插值进 config.json proxies.http.static_headers，
       # Centrifugo 调 BFF 订阅回调时携带 x-odysseia-proxy 头，BFF 校验后放行（防伪造调用）
       CENTRIFUGO_VAR_PROXY_SECRET: ${ODYSSEIA_PROXY_SECRET:?请在 .env 设置 ODYSSEIA_PROXY_SECRET}
+      # WS Origin 白名单（envconfig 覆盖 config.json 的空 allowed_origins，多值空格分隔）：
+      # 浏览器 WS 握手必带 Origin，白名单外一律拒绝——防跨站页面盗连用户凭证长连接。
+      # 注意 v6 空列表语义是「拒绝一切带 Origin 的握手」，必须显式配置才能让浏览器连上
+      CENTRIFUGO_CLIENT_ALLOWED_ORIGINS: https://${ODYSSEIA_DOMAIN}
     volumes:
       - ./centrifugo/config.json:/etc/centrifugo/config.json:ro
+    networks:
+      - app
     ulimits:
       # fd 上限=内核单进程默认天花板（fs.nr_open=1048576），每个 WS 连接占 1 fd；
       # 上限本身不预留资源，实际内存由连接数决定（~10KB/连接）
@@ -115,13 +136,15 @@ services:
     image: getmeili/meilisearch:v1.12
     restart: unless-stopped
     environment:
-      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY}
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:?请在 .env 设置 MEILI_MASTER_KEY}
       MEILI_ENV: production
       MEILI_NO_ANALYTICS: "true"
       MEILI_MAX_INDEXING_MEMORY: "4Gb"
       MEILI_HTTP_PAYLOAD_SIZE_LIMIT: "104857600"
     volumes:
       - meili_data:/meili_data
+    networks:
+      - app
     mem_limit: 12g
 
   # ---------- 数据库 ----------
@@ -129,9 +152,9 @@ services:
     image: mongo:8
     restart: unless-stopped
     environment:
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
-      MONGO_INITDB_DATABASE: ${MONGO_INITDB_DATABASE}
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:?请在 .env 设置 MONGO_INITDB_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:?请在 .env 设置 MONGO_INITDB_ROOT_PASSWORD}
+      MONGO_INITDB_DATABASE: ${MONGO_INITDB_DATABASE:?请在 .env 设置 MONGO_INITDB_DATABASE}
     command: ["--wiredTigerCacheSizeGB", "12"]
     healthcheck:
       # 防止 nodebb setup 在 mongo 首次初始化 root 用户完成前抢跑
@@ -143,6 +166,8 @@ services:
     volumes:
       - mongo_data:/data/db
       - ./scripts:/scripts:ro # 备份脚本用
+    networks:
+      - data
     mem_limit: 16g # 12G wiredTiger cache + 连接/聚合开销余量，防止慢查询吃光 64G
 
   redis:
@@ -150,10 +175,12 @@ services:
     restart: unless-stopped
     # noeviction：NodeBB 的 Redis 键多为无 TTL 业务数据（会话/通知/计数），
     # LRU 驱逐会造成静默数据丢失（帖子数丢失、通知丢失类诡异 bug），宁可写满时报错
-    command: ["redis-server", "--maxmemory", "2gb", "--maxmemory-policy", "noeviction", "--requirepass", "${REDIS_PASSWORD}"]
+    command: ["redis-server", "--maxmemory", "2gb", "--maxmemory-policy", "noeviction", "--requirepass", "${REDIS_PASSWORD:?请在 .env 设置 REDIS_PASSWORD}"]
     mem_limit: 3g # maxmemory 2gb + fork 持久化时 COW 开销余量
     volumes:
       - redis_data:/data
+    networks:
+      - data
 
   # ---------- BFF 聚合层 ----------
   bff:
@@ -162,14 +189,16 @@ services:
     restart: unless-stopped
     environment:
       NODEBB_URL: http://nodebb:4567
-      CENTRIFUGO_CLIENT_TOKEN_HMAC_SECRET_KEY: ${CENTRIFUGO_CLIENT_TOKEN_HMAC_SECRET_KEY}
-      ODYSSEIA_INTERNAL_TOKEN: ${ODYSSEIA_INTERNAL_TOKEN}
-      ODYSSEIA_PROXY_SECRET: ${ODYSSEIA_PROXY_SECRET}
-      R2_ENDPOINT: ${R2_ENDPOINT}
-      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID}
-      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY}
-      R2_BUCKET_MEDIA: ${R2_BUCKET_MEDIA}
-      R2_BUCKET_R18: ${R2_BUCKET_R18}
+      CENTRIFUGO_CLIENT_TOKEN_HMAC_SECRET_KEY: ${CENTRIFUGO_CLIENT_TOKEN_HMAC_SECRET_KEY:?请在 .env 设置 CENTRIFUGO_CLIENT_TOKEN_HMAC_SECRET_KEY}
+      ODYSSEIA_INTERNAL_TOKEN: ${ODYSSEIA_INTERNAL_TOKEN:?请在 .env 设置 ODYSSEIA_INTERNAL_TOKEN}
+      ODYSSEIA_PROXY_SECRET: ${ODYSSEIA_PROXY_SECRET:?请在 .env 设置 ODYSSEIA_PROXY_SECRET}
+      R2_ENDPOINT: ${R2_ENDPOINT:?请在 .env 设置 R2_ENDPOINT}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:?请在 .env 设置 R2_ACCESS_KEY_ID}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:?请在 .env 设置 R2_SECRET_ACCESS_KEY}
+      R2_BUCKET_MEDIA: ${R2_BUCKET_MEDIA:?请在 .env 设置 R2_BUCKET_MEDIA}
+      R2_BUCKET_R18: ${R2_BUCKET_R18:?请在 .env 设置 R2_BUCKET_R18}
+    networks:
+      - app
     depends_on:
       nodebb:
         condition: service_healthy
@@ -198,6 +227,9 @@ services:
       sh -c 'sed "s|__MEILI_MASTER_KEY__|$$MEILI_MASTER_KEY|" /etc/prometheus/prometheus.tpl.yml
       > /tmp/prometheus.yml && exec /bin/prometheus --config.file=/tmp/prometheus.yml
       --storage.tsdb.retention.time=30d'
+    networks:
+      - monitor
+      - app # 抓 centrifugo:8000 / meilisearch:7700 的 /metrics
     mem_limit: 2g
 
   grafana:
@@ -215,6 +247,8 @@ services:
     volumes:
       - grafana_data:/var/lib/grafana
       - ./monitoring/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+    networks:
+      - monitor
     mem_limit: 1g
     depends_on:
       - prometheus
@@ -223,13 +257,18 @@ services:
     image: gcr.io/cadvisor/cadvisor:v0.51.0
     restart: unless-stopped
     volumes:
-      - /:/rootfs:ro
+      # 不挂宿主全根（/:/rootfs:ro）——原姿势把全盘只读暴露给容器，被 RCE 即全机文件泄露。
+      # 仅补 /proc 到 cadvisor 约定的 /rootfs/proc 路径，保住 machine info（CPU/内存拓扑）；
+      # 容器级 CPU/内存/网络指标走 cgroup 与 /var/lib/docker，不依赖全根
+      - /proc:/rootfs/proc:ro
       - /var/run:/var/run:ro
       - /sys:/sys:ro
       - /var/lib/docker/:/var/lib/docker:ro
       - /dev/disk/:/dev/disk:ro
     devices:
       - /dev/kmsg
+    networks:
+      - monitor
     mem_limit: 1g
 
   mongo-exporter:
@@ -237,7 +276,10 @@ services:
     image: percona/mongodb_exporter:0.42
     restart: unless-stopped
     command:
-      - --mongodb.uri=mongodb://${MONGO_INITDB_ROOT_USERNAME}:${MONGO_INITDB_ROOT_PASSWORD}@mongo:27017/admin
+      - --mongodb.uri=mongodb://${MONGO_INITDB_ROOT_USERNAME:?请在 .env 设置 MONGO_INITDB_ROOT_USERNAME}:${MONGO_INITDB_ROOT_PASSWORD:?请在 .env 设置 MONGO_INITDB_ROOT_PASSWORD}@mongo:27017/admin
+    networks:
+      - monitor
+      - data
     mem_limit: 512m
     depends_on:
       mongo:
@@ -248,7 +290,10 @@ services:
     restart: unless-stopped
     environment:
       REDIS_ADDR: redis://redis:6379
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?请在 .env 设置 REDIS_PASSWORD}
+    networks:
+      - monitor
+      - data
     mem_limit: 256m
 
 volumes:
@@ -261,3 +306,15 @@ volumes:
   meili_data:
   prometheus_data:
   grafana_data:
+
+networks:
+  # 公网边界：仅 Caddy（未来加 WAF/回源层时无需重构）
+  edge:
+  # 应用层互访（含 prometheus 跨网抓取）
+  app:
+  # 数据层：无外网出口
+  data:
+    internal: true
+  # 可观测层：无外网出口
+  monitor:
+    internal: true

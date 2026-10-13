@@ -42,8 +42,5 @@ scrape_configs:
     static_configs:
       - targets: ['cadvisor:8080']
 
-  # NodeBB：进程级指标由 bridge 插件 /api/metrics 暴露（无原生 exporter 时可先抓 cadvisor 兜底）
-  - job_name: nodebb
-    static_configs:
-      - targets: ['nodebb:4567']
-    metrics_path: /metrics
+  # 注意：不抓 nodebb:4567——bridge 插件未实现 /metrics endpoint，
+  # 该目标会永久 DOWN 告警。NodeBB 容器指标由 cadvisor 兜底覆盖。

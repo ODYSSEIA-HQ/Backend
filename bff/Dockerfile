@@ -20,11 +20,16 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 
+# 降权：专用非 root 用户运行。二进制与 vendor 保持 root 属主只读（不 chown）——
+# 进程内 RCE 也无法改写自身或静态文件做持久化，/app 下无可写路径
+RUN useradd -r -u 10001 bff
+
 WORKDIR /app
 COPY --from=builder /build/target/release/odysseia-bff /usr/local/bin/odysseia-bff
 # centrifuge SDK 静态托管（Node 版 express.static 的等价物，只有这一个文件）
 COPY vendor /app/vendor
 
+USER bff
 EXPOSE 3000
 
 CMD ["odysseia-bff"]

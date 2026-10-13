@@ -14,6 +14,16 @@
 {$ODYSSEIA_DOMAIN} {
 	encode zstd gzip
 
+	# 全站安全响应头（浏览器文档上下文用；WS/API 流量不受影响）
+	# - HSTS：强制一年 HTTPS（纯 HTTP 的 dev 下浏览器会忽略此头，无害）
+	# - 不加 preload：进 preload 列表近乎不可逆，需明确决策
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+	}
+
 	# 隐私优先：关闭访问日志（安全设计 D10）
 	# log { output discard }
 

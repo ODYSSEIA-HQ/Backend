@@ -15,7 +15,14 @@ services:
       # http:// 前缀强制纯 HTTP，Caddy 不做证书签发与重定向
       ODYSSEIA_DOMAIN: http://localhost
     ports: !override
-      - "8080:80"
+      # 绑回环：纯 HTTP 的演示口，不能被局域网其他设备扫描到
+      - "127.0.0.1:8080:80"
+
+  centrifugo:
+    environment:
+      # dev 覆写：WS Origin 白名单改成本地回环站点（主层是 https://生产域名）。
+      # 不覆写的话 dev 浏览器 WS 握手全部被拒——v6 空列表/错列表 = 拒绝一切
+      CENTRIFUGO_CLIENT_ALLOWED_ORIGINS: http://localhost:8080
 
   nodebb:
     environment: !override

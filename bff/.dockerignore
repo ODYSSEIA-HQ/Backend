@@ -2,3 +2,5 @@ node_modules
 *.log
 .env
 upstream/
+# 本地 cargo 产物：几 GB 的 target/ 会撑爆 build context，且容器内编译有自己的 target
+target/
