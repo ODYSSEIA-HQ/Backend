@@ -35,8 +35,9 @@ admin UI      ─────────►  （不走公网；宿主机 127.0.
 
 ```
 odysseia/
-├── docker-compose.yml        # 七服务编排（caddy/nodebb/centrifugo/meili/mongo/redis/bff）
+├── docker-compose.yml        # 七服务编排 + 监控栈（caddy/nodebb/centrifugo/meili/mongo/redis/bff + prometheus/grafana/cadvisor/exporters）
 ├── docker-compose.dev.yml    # 本地演示叠加层（弱口令/免TLS，须手动 -f 加载，生产不自动叠加）
+├── tsconfig.json             # JSDoc 类型检查（tsc --checkJs，零构建链；.tscheck/ 本地工具链不入库）
 ├── .env.example              # 全部密钥清单（含生成命令注释）
 ├── caddy/Caddyfile           # 路由表；/bff/centrifugo/* 故意不出公网（防越权 oracle）
 ├── centrifugo/config.json    # 四 namespace + subscribe proxy（static_headers 注共享密钥）
@@ -47,12 +48,15 @@ odysseia/
 │   ├── Dockerfile           # multi-stage 构建，产物 ~15MB
 │   ├── vendor/centrifuge.js # SDK 静态托管（构建期 COPY，替代 node_modules）
 │   └── server.js            # 旧 Node 版（契约参考实现，已被 Rust 版替代）
+├── monitoring/              # 可观测性（全内网）
+│   ├── prometheus.yml        # 抓取配置：centrifugo/meili/mongo/redis/cadvisor/nodebb
+│   └── grafana-datasources.yml  # 数据源自动置备
 ├── plugins/
 │   ├── nodebb-plugin-odysseia-bridge/    # 桥接：事件→Centrifugo 广播 + Meili 同步 + 内部鉴权 API + 装饰
 │   │   ├── library.js        #   14 个 hook 接线；消息负载构造（见「消息契约」）
 │   │   ├── lib/centrifugo.js #   publish 客户端（AbortSignal 3s，失败不阻塞发帖）
 │   │   ├── lib/search.js     #   Meili 索引同步（indexPost/deletePost 幂等）
-│   │   ├── lib/internal.js   #   can-read / can-chat 内部 API（X-Internal-Token）
+│   │   ├── lib/internal.js   #   can-read / can-chat / chat-index 内部 API（X-Internal-Token）
 │   │   ├── lib/decor.js      #   装饰引擎：纯库零 hook（消毒/批量成员判定/组快照缓存），可独立单测
 │   │   ├── static/lib/       #   chat.js（WS 连接管理）+ decor.js/css（三端渲染器）
 │   │   └── acpTemplates/     #   ACP 装饰规则配置面
@@ -244,7 +248,30 @@ bash scripts/backup.sh   # mongodump + uploads + nodebb_config → age 加密 �
 
 ## 内存预算（64G 宿主机）
 
-Mongo 12G（wiredTiger cache）+ Meili 12G（上限，索引期峰值 4G）+ NodeBB 8G + Centrifugo 4G + Redis 2G（noeviction）+ BFF 512M（Rust 实测 ~5MB RSS）+ 系统/页缓存 ~25G，已固化在 compose。
+Mongo 12G（wiredTiger cache）+ Meili 12G（上限，索引期峰值 4G）+ NodeBB 8G + Centrifugo 4G + Redis 2G（noeviction）+ BFF 512M（Rust 实测 ~5MB RSS）+ 监控栈 ~5G（prometheus 2G / grafana 1G / cadvisor 1G / exporters ~1G）+ 系统/页缓存 ~20G，已固化在 compose。
+
+## 可观测性
+
+Prometheus（30d 保留）+ Grafana + cAdvisor + mongo/redis exporter，全内网抓取（[monitoring/prometheus.yml](monitoring/prometheus.yml)）：
+
+| 抓取目标 | 指标 |
+|---|---|
+| Centrifugo `/metrics` | WS 连接数/节点内存/广播延迟 |
+| Meilisearch `/metrics`（Bearer） | 索引队列/搜索延迟 |
+| mongo-exporter | opcounters/连接数/复制延迟 |
+| redis-exporter | 内存/命中率 |
+| cAdvisor | 全容器 CPU/内存/网络 |
+
+Grafana 面板：宿主机 `127.0.0.1:3100`（ssh 端口转发，admin 密码在 .env `GRAFANA_ADMIN_PASSWORD`，匿名只读 Viewer）。
+
+## 类型检查（零构建链）
+
+自有 JS（插件 + BFF 参考实现）用 JSDoc + `tsc --checkJs` 静态检查，不引入编译产物、不改运行时语义：
+
+```bash
+cd .tscheck && npm i typescript @types/node --ignore-scripts   # 一次性
+node node_modules/typescript/lib/tsc.js -p ../tsconfig.json
+```
 
 ## 许可证
 

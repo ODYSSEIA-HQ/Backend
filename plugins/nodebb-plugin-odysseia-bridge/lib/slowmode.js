@@ -146,10 +146,11 @@ async function getLastPostTimeInCategory(uid, cid) {
 /**
  * 生成 slowmode 错误对象（供 filter 钩子 throw）
  * @param {number} retryAfterMs
- * @returns {Error}
+ * @returns {any} Error 实例，附 code/retryAfterMs 附加属性
  */
 function slowmodeError(retryAfterMs) {
 	const seconds = Math.ceil(retryAfterMs / 1000);
+	/** @type {any} */
 	const err = new Error(`发帖过于频繁，请 ${seconds} 秒后再试`);
 	err.code = 'SLOWMODE_RATE_LIMITED';
 	err.retryAfterMs = retryAfterMs;

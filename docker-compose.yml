@@ -21,9 +21,12 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      - nodebb
-      - bff
-      - centrifugo
+      nodebb:
+        condition: service_healthy
+      bff:
+        condition: service_healthy
+      centrifugo:
+        condition: service_started
 
   # ---------- 论坛主体（NodeBB v4 + 两个自研插件） ----------
   nodebb:
@@ -166,7 +169,8 @@ services:
       R2_BUCKET_MEDIA: ${R2_BUCKET_MEDIA}
       R2_BUCKET_R18: ${R2_BUCKET_R18}
     depends_on:
-      - nodebb
+      nodebb:
+        condition: service_healthy
     mem_limit: 512m
     healthcheck:
       test: ["CMD", "/usr/local/bin/odysseia-bff", "--healthcheck"]
@@ -174,6 +178,69 @@ services:
       timeout: 5s
       retries: 3
       start_period: 5s
+
+  # ---------- 可观测性（全内网，不对公网暴露） ----------
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=30d
+    mem_limit: 2g
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    restart: unless-stopped
+    # 与 Centrifugo admin 同策略：宿主机回环 + ssh 端口转发访问
+    ports:
+      - "127.0.0.1:3100:3000"
+    environment:
+      # 匿名只读访客模式（真要多人用时再接 NodeBB OAuth）
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?请在 .env 设置 GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+    mem_limit: 1g
+    depends_on:
+      - prometheus
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.51.0
+    restart: unless-stopped
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    devices:
+      - /dev/kmsg
+    mem_limit: 1g
+
+  mongo-exporter:
+    # mongodb_exporter（percona 维护分支）：连 primary 读 db.serverStatus 等
+    image: percona/mongodb_exporter:0.42
+    restart: unless-stopped
+    command:
+      - --mongodb.uri=mongodb://${MONGO_INITDB_ROOT_USERNAME}:${MONGO_INITDB_ROOT_PASSWORD}@mongo:27017/admin
+    mem_limit: 512m
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.67.0
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR: redis://redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    mem_limit: 256m
 
 volumes:
   caddy_data:
@@ -183,3 +250,5 @@ volumes:
   mongo_data:
   redis_data:
   meili_data:
+  prometheus_data:
+  grafana_data:

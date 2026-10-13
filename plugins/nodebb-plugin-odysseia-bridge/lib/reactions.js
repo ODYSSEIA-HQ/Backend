@@ -226,10 +226,11 @@ async function getReactionCount(pid) {
  * 批量获取多条消息的反应（读路径性能护栏：批量 pipeline 减少往返）
  * @param {number[]} pids
  * @param {number} uid
- * @returns {Promise<Object<number, Array>>} pid -> reactions[]
+ * @returns {Promise<Record<string, any[]>>} pid -> reactions[]
  */
 async function getReactionsForPosts(pids, uid = 0) {
 	if (!Array.isArray(pids) || !pids.length) return {};
+	/** @type {Record<string, any[]>} */
 	const result = {};
 	if (!db) return result;
 

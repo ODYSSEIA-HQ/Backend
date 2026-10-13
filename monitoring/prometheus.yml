@@ -1,0 +1,46 @@
+# ΟΔΥΣΣΕΙΑ Prometheus 抓取配置
+# 全内网：prometheus 容器在 compose 网络内按服务名直连各 exporter，
+# 不经 Caddy、不对公网暴露。面板看 Grafana（127.0.0.1:3100，ssh 端口转发）。
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Prometheus 自监控
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Centrifugo v6 内置 /metrics（prometheus 插件默认启用）
+  - job_name: centrifugo
+    static_configs:
+      - targets: ['centrifugo:8000']
+
+  # Meilisearch v1.12 内置 /metrics（需 master key，用 params 携带）
+  - job_name: meilisearch
+    metrics_path: /metrics
+    authorization_credentials: ${MEILI_MASTER_KEY}
+    # Meili 的 /metrics 要求 Authorization: Bearer <master-key>
+    static_configs:
+      - targets: ['meilisearch:7700']
+
+  # MongoDB exporter（compose 里由 mongo 镜像启用的 sidecar 容器）
+  - job_name: mongodb
+    static_configs:
+      - targets: ['mongo-exporter:9216']
+
+  # Redis exporter（sidecar）
+  - job_name: redis
+    static_configs:
+      - targets: ['redis-exporter:9121']
+
+  # cAdvisor：全容器 CPU/内存/网络/磁盘
+  - job_name: cadvisor
+    static_configs:
+      - targets: ['cadvisor:8080']
+
+  # NodeBB：进程级指标由 bridge 插件 /api/metrics 暴露（无原生 exporter 时可先抓 cadvisor 兜底）
+  - job_name: nodebb
+    static_configs:
+      - targets: ['nodebb:4567']
+    metrics_path: /metrics

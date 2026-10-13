@@ -21,12 +21,14 @@
  *   user:{uid}         → 仅本人（多端同步）
  */
 
-const express = require('express');
+// 本文件是旧 Node 版 BFF（Rust 版 src/main.rs 已替代），保留作契约参考实现。
+// 类型检查环境（.tscheck）不装运行时依赖，运行时模块按 any 处理：
+/** @type {any} */ const express = require('express');
 const path = require('path');
-const jwt = require('jsonwebtoken');
+/** @type {any} */ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
-const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
-const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+/** @type {any} */ const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+/** @type {any} */ const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
 const {
 	NODEBB_URL,
@@ -290,48 +292,16 @@ app.post('/upload/presign', async (req, res) => {
 
 /**
  * 定位消息在房间内的 index（0-based 从旧到新）
- * NodeBB 没有 by-mid 查 index 的 API，策略：先拉最新一页，若目标在页内则直接定位；
- * 否则用 start 二分逼近（房间消息量通常 <10k，二分 14 次内收敛）。
+ * 走 NodeBB 插件内部 API（bridge lib/internal.js）直接查 chat:room:{roomId}:mids
+ * 的 rank（score=timestamp 升序，rank 即 index），一次回源。
  * @param {number} roomId
  * @param {number} targetMid
  * @returns {Promise<number|null>} index 或 null（消息不存在）
  */
 async function locateMessageIndex(roomId, targetMid) {
-	// 先拉最新一页（50 条），目标大概率在最新页内
-	const latest = await callNodeBB(`/api/v3/chats/${roomId}/messages?start=0&direction=-1`);
-	if (!latest || !Array.isArray(latest.messages)) return null;
-
-	const mid = Number(targetMid);
-	const inLatest = latest.messages.findIndex(m => Number(m.messageId || m.mid) === mid);
-	if (inLatest !== -1) {
-		// 最新页 direction=-1 返回降序，index = total - 1 - inLatest
-		// 但我们不知道 total，用近似：返回 0 表示"在最新页"，调用方直接 start=0
-		return 0;
-	}
-
-	// 不在最新页：二分逼近（NodeBB mid 单调递增，与 index 正相关）
-	// 上界：start=0 是最新，下界：start=MAX_SAFE_INTEGER 是最旧
-	let low = 0, high = 100000; // 10 万条私聊消息足够覆盖
-	while (low < high) {
-		const midPoint = Math.floor((low + high) / 2);
-		const page = await callNodeBB(
-			`/api/v3/chats/${roomId}/messages?start=${midPoint}&direction=-1`
-		);
-		if (!page || !Array.isArray(page.messages) || !page.messages.length) {
-			high = midPoint;
-			continue;
-		}
-		const found = page.messages.some(m => Number(m.messageId || m.mid) === mid);
-		if (found) return midPoint;
-		// 判断目标在 midPoint 之前还是之后：比较页内最大 mid
-		const pageMaxMid = Math.max(...page.messages.map(m => Number(m.messageId || m.mid)));
-		if (mid > pageMaxMid) {
-			high = midPoint; // 目标更新，往更小 start 找
-		} else {
-			low = midPoint + 1; // 目标更旧，往更大 start 找
-		}
-	}
-	return null;
+	const r = await callNodeBB(`/api/v3/plugins/odysseia/chat-index/${roomId}/${targetMid}`);
+	if (!r || typeof r.index !== 'number') return null;
+	return r.index;
 }
 
 app.get('/chat/:roomId/messages', async (req, res) => {

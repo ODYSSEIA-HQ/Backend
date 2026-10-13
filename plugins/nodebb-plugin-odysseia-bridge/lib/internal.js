@@ -33,7 +33,11 @@ function requireInternalToken(req, res, next) {
 	next();
 }
 
-function mount(router /* , middleware */) {
+/**
+ * @param {any} router NodeBB static:app.load 传入的 express Router
+ * @param {object} [_middleware] 保留参数（同源传入，暂未用）
+ */
+function mount(router, _middleware) {
 	// 帖内聊天室订阅鉴权：用户能否读该帖
 	router.get('/api/v3/plugins/odysseia/can-read/:tid/:uid', requireInternalToken, async (req, res) => {
 		try {
@@ -57,6 +61,27 @@ function mount(router /* , middleware */) {
 			res.json({ canRead: !!inRoom });
 		} catch (err) {
 			console.error('[odysseia-bridge] can-chat 校验失败', err.message);
+			res.status(500).json({ error: 'internal' });
+		}
+	});
+
+	// 私聊消息 mid → 房间内 index（0-based 从旧到新）
+	// BFF cursor 分页用：替代原先的「拉最新页 + 二分逼近」探测法（最多 14 次回源），
+	// 直接查 chat:room:{roomId}:mids 的 rank（score=timestamp 升序，rank 即 index）。
+	// 不存在返回 index: null（BFF 翻译成 404 message not found）。
+	router.get('/api/v3/plugins/odysseia/chat-index/:roomId/:mid', requireInternalToken, async (req, res) => {
+		try {
+			const db = loadModule('./src/database');
+			if (!db) return res.status(500).json({ error: 'database 模块不可用' });
+			const roomId = Number(req.params.roomId);
+			const mid = Number(req.params.mid);
+			const exists = await db.isSortedSetMember(`chat:room:${roomId}:mids`, mid);
+			if (!exists) return res.json({ index: null });
+			// sortedSetRank 升序 rank：0 = 最旧消息，即 NodeBB 分页语义里的 index
+			const index = await db.sortedSetRank(`chat:room:${roomId}:mids`, mid);
+			res.json({ index });
+		} catch (err) {
+			console.error('[odysseia-bridge] chat-index 查询失败', err.message);
 			res.status(500).json({ error: 'internal' });
 		}
 	});

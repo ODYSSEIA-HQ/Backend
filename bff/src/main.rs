@@ -610,52 +610,17 @@ struct ChatMessagesQuery {
 	limit: Option<String>,
 }
 
-fn message_mid(m: &serde_json::Value) -> Option<u64> {
-	m.get("messageId")
-		.and_then(|v| v.as_u64())
-		.or_else(|| m.get("mid").and_then(|v| v.as_u64()))
-}
-
 /// 定位消息在房间内的 index（0-based 从旧到新）
-/// NodeBB 没有 by-mid 查 index 的 API，策略：先拉最新一页，若目标在页内则直接定位；
-/// 否则用 start 二分逼近（房间消息量通常 <10k，二分 14 次内收敛）。
+/// 走 NodeBB 插件内部 API（bridge lib/internal.js）直接查 sorted set rank，
+/// 一次回源替代原先的「最新页 + 二分逼近」探测法（最多 14 次）。
+/// 返回 None = 消息不存在（或 NodeBB 不可达，fail-closed 404）。
 async fn locate_message_index(state: &AppState, room_id: u64, target_mid: u64) -> Option<u64> {
-	// 先拉最新一页（50 条），目标大概率在最新页内
-	let latest = call_nodebb(state, &format!("/api/v3/chats/{}/messages?start=0&direction=-1", room_id)).await?;
-	let messages = latest.get("messages")?.as_array()?.clone();
-
-	if messages.iter().any(|m| message_mid(m) == Some(target_mid)) {
-		// 最新页 direction=-1 返回降序，目标在最新页 → 调用方直接 start=0（与 Node 版同近似）
-		return Some(0);
-	}
-
-	// 不在最新页：二分逼近（NodeBB mid 单调递增，与 index 正相关）
-	let mut low: u64 = 0;
-	let mut high: u64 = 100_000; // 10 万条私聊消息足够覆盖
-	while low < high {
-		let mid_point = low + (high - low) / 2;
-		let page = call_nodebb(
-			state,
-			&format!("/api/v3/chats/{}/messages?start={}&direction=-1", room_id, mid_point),
-		)
-		.await?;
-		let messages = page.get("messages")?.as_array()?.clone();
-		if messages.is_empty() {
-			high = mid_point;
-			continue;
-		}
-		if messages.iter().any(|m| message_mid(m) == Some(target_mid)) {
-			return Some(mid_point);
-		}
-		// 判断目标在 mid_point 之前还是之后：比较页内最大 mid
-		let page_max_mid = messages.iter().filter_map(message_mid).max().unwrap_or(0);
-		if target_mid > page_max_mid {
-			high = mid_point; // 目标更新，往更小 start 找
-		} else {
-			low = mid_point + 1; // 目标更旧，往更大 start 找
-		}
-	}
-	None
+	let r = call_nodebb(
+		state,
+		&format!("/api/v3/plugins/odysseia/chat-index/{}/{}", room_id, target_mid),
+	)
+	.await?;
+	r.get("index").and_then(|v| v.as_u64())
 }
 
 async fn get_chat_messages(

@@ -1,0 +1,27 @@
+{
+	"compilerOptions": {
+		// 纯类型检查：不产出任何文件、零构建链侵入（README D12：语义不变）
+		"allowJs": true,
+		"checkJs": true,
+		"noEmit": true,
+		"target": "es2022",
+		"module": "commonjs",
+		"moduleResolution": "node",
+		"strict": false,
+		// 挂钩 NodeBB hook 的函数签名宽松（payload 结构随 NodeBB 版本演进）
+		"skipLibCheck": true,
+		"resolveJsonModule": true,
+		"esModuleInterop": true,
+		// @types/node 装在 .tscheck/node_modules（不入库，gitignore），显式指过去
+		"typeRoots": ["./.tscheck/node_modules/@types"],
+		"types": ["node"]
+	},
+	"include": [
+		"plugins/nodebb-plugin-odysseia-bridge/library.js",
+		"plugins/nodebb-plugin-odysseia-bridge/lib/*.js",
+		"plugins/nodebb-plugin-odysseia-rules/library.js",
+		"plugins/nodebb-plugin-odysseia-rules/lib/*.js",
+		"bff/server.js"
+	],
+	"exclude": ["node_modules", "**/upstream/**"]
+}
