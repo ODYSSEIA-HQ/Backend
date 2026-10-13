@@ -1,0 +1,41 @@
+[package]
+name = "odysseia-bff"
+version = "0.2.0"
+edition = "2021"
+description = "ΟΔΥΣΣΕΙΑ BFF 聚合层（Rust 版）：token / subscribe-proxy / presign / chat 分页"
+license = "MIT"
+
+[dependencies]
+# Web 框架：axum 0.7 + tokio（生态最主流组合）
+axum = { version = "0.7", features = ["json"] }
+tokio = { version = "1", features = ["full"] }
+tower = "0.4"
+
+# 序列化
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# JWT（Centrifugo 连接 token，HS256——与 Node jsonwebtoken 签发格式完全兼容）
+jsonwebtoken = "9"
+
+# HTTP 客户端（调 NodeBB /api/me 与内部 API）
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# 时间（JWT exp / 限频窗口）
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+# 随机 key 生成（R2 object key）
+rand = "0.8"
+
+# SigV4 手写签名（presign）：SHA256 + HMAC
+sha2 = "0.10"
+hmac = "0.12"
+
+# 日志
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true

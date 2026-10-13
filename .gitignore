@@ -3,3 +3,5 @@ node_modules/
 *.log
 # 上游参考源码（外部仓库完整副本，按组件归档在 */upstream/，不入本仓库）
 **/upstream/
+# Rust 编译产物
+bff/target/

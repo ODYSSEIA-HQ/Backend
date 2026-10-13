@@ -1,9 +1,10 @@
 # ΟΔΥΣΣΕIA 反向代理
 # 路由表：
 #   /connection/*   → Centrifugo WS 客户端端点
-#   /centrifugo/*   → Centrifugo 管理界面
 #   /bff/*          → BFF 聚合层（token / 订阅代理回调 / 预签名 / 消息流）
 #   其余            → NodeBB
+# Centrifugo admin 面板不走公网：compose 将 127.0.0.1:4000 绑到宿主机，
+# 需要 UI 时 ssh 端口转发访问 http://127.0.0.1:4000/centrifugo/admin/
 
 {
 	email admin@{$ODYSSEIA_DOMAIN}
@@ -25,19 +26,11 @@
 	handle @ws {
 		reverse_proxy centrifugo:8000
 	}
-	handle /centrifugo/* {
-		# 管理界面：路径前缀由 Centrifugo 侧 admin.handler_prefix=/centrifugo 提供
-		# （web UI 资源为相对路径引用，API base 取自 window.location.pathname——
-		#   切勿在此加 strip_prefix，会破坏 index.html 的 ./assets 相对解析）
-		# 生产建议：再加 IP 白名单 / forward_auth
-		reverse_proxy centrifugo:8000
-	}
-
 	# --- BFF ---
-	# 白名单公网路由：仅 token / upload / vendor / healthz 可达。
+	# 白名单公网路由：token / upload / vendor / healthz / chat 分页可经公网到达。
 	# /bff/centrifugo/* 是 Centrifugo → BFF 的内网订阅回调（带共享密钥头），
 	# 不对公网暴露——否则任何登录用户可伪造 body 探测他人频道权限（越权 oracle）。
-	@bffPublic path /bff/token /bff/upload/* /bff/vendor/* /bff/healthz
+	@bffPublic path /bff/token /bff/upload/* /bff/vendor/* /bff/healthz /bff/chat/*
 	handle @bffPublic {
 		uri strip_prefix /bff
 		reverse_proxy bff:3000

@@ -11,8 +11,8 @@
 ───────                    ──────────────────                ────────
 SSR / REST API ─────────►  其余路径 ──────────────────────►  NodeBB :4567 ─┬─ MongoDB（主库）
 WS 实时通道   ─────────►  /connection/* ──────────────────►  Centrifugo :8000
-管理界面      ─────────►  /centrifugo/* ──────────────────►  （同上，admin UI）
-token/上传/SDK ────────►  /bff/{token,upload,vendor,healthz} ► BFF :3000（无状态）
+token/上传/SDK/分页 ────►  /bff/{token,upload,vendor,healthz,chat} ► BFF :3000（Rust，无状态）
+admin UI      ─────────►  （不走公网；宿主机 127.0.0.1:4000，ssh 端口转发访问）
 
 内网回调（公网不可达）：
   Centrifugo ──subscribe proxy（带 x-odysseia-proxy 共享密钥头）──► BFF /centrifugo/subscribe
@@ -25,8 +25,9 @@ token/上传/SDK ────────►  /bff/{token,upload,vendor,healthz}
 
 关键架构决策（改代码前先读）：
 
-- **D4/D7 不改 NodeBB 核心**：所有定制走插件 hook，升级 NodeBB 无冲突。
-- **D8 BFF 刻意小**：只做「鉴权 + 发证 + 预签名」，消息流不经过它；无状态、可随时重启。
+- **独立项目**：NodeBB 4 为骨架但全仓库归我们所有，核心与插件层均可按需改动。
+- **D8 BFF 刻意小**：只做「鉴权 + 发证 + 预签名 + 分页适配」，消息流不经过它；无状态、可随时重启。Rust（axum）实现，零 AWS SDK（SigV4 手写签名），镜像 ~15MB。
+- **Fluxer 移植纪律**：语义独立重写（read-states/reactions/typing/限频/slowmode/分页契约），代码仅作参考；许可证兼容注意 AGPL 文件级保留。
 - **实时层双通道**：首屏走 NodeBB SSR/REST（SEO + 游客），增量走 Centrifugo WS（仅登录用户）。
 - **fail-closed 全网**：任何鉴权环节异常/超时/缺密钥 → 拒绝，而非放行。
 
@@ -40,8 +41,12 @@ odysseia/
 ├── caddy/Caddyfile           # 路由表；/bff/centrifugo/* 故意不出公网（防越权 oracle）
 ├── centrifugo/config.json    # 四 namespace + subscribe proxy（static_headers 注共享密钥）
 ├── nodebb/Dockerfile         # 官方 NodeBB 4 + 两个自研插件
-├── bff/
-│   └── server.js             # 三端点：/token 签发、/centrifugo/subscribe 回调、/upload/presign
+├── bff/                     # Rust 版 BFF（axum）：契约与旧 Node 版逐字节对齐
+│   ├── Cargo.toml           # 依赖：axum/tokio/reqwest/jsonwebtoken/hmac+sha2（无 AWS SDK）
+│   ├── src/main.rs          # 五端点：/token、/centrifugo/subscribe、/upload/presign、/chat/:roomId/messages、/vendor/centrifuge.js
+│   ├── Dockerfile           # multi-stage 构建，产物 ~15MB
+│   ├── vendor/centrifuge.js # SDK 静态托管（构建期 COPY，替代 node_modules）
+│   └── server.js            # 旧 Node 版（契约参考实现，已被 Rust 版替代）
 ├── plugins/
 │   ├── nodebb-plugin-odysseia-bridge/    # 桥接：事件→Centrifugo 广播 + Meili 同步 + 内部鉴权 API + 装饰
 │   │   ├── library.js        #   14 个 hook 接线；消息负载构造（见「消息契约」）
@@ -112,10 +117,13 @@ odysseia/
 
 | 端点 | 说明 |
 |---|---|
-| `GET /bff/token` | cookie 换 Centrifugo JWT（401=未登录） |
-| `POST /bff/upload/presign` | R2 预签名直传；`kind=media` 普通桶 / `kind=r18`（需传 `tid` 且有读权限）R18 桶；per-uid 限频 10 次/10 分钟；TTL 15min |
+| `GET /bff/token` | cookie 换 Centrifugo JWT（401=未登录）；双层限频 20 req/10s/IP + 60 req/10min/uid |
+| `POST /bff/upload/presign` | R2 预签名直传；`kind=media` 普通桶 / `kind=r18`（需传 `tid` 且有读权限）R18 桶；限频 30 req/10min/IP + 10 req/10min/uid；TTL 15min；SigV4 手写签名（无 AWS SDK） |
+| `GET /bff/chat/{roomId}/messages` | 私聊 cursor 分页（before/after/around，limit 1..100 默认 50），限频 30 req/10s/IP |
 | `GET /bff/vendor/centrifuge.js` | 托管 centrifuge SDK（免 CDN） |
 | `GET /bff/healthz` | 健康检查 |
+
+429 契约（全部公网端点）：`Retry-After` 头（整秒 ceil）+ body `{code:"RATE_LIMITED", message, retry_after}`（秒级小数）+ `X-RateLimit-Scope: ip|user`。
 
 上传 key 格式：`u{uid}/{yyyyMM}/{16字节hex}.{ext}`，白名单 MIME：png/jpeg/gif/webp/avif/mp4。
 
@@ -236,7 +244,7 @@ bash scripts/backup.sh   # mongodump + uploads + nodebb_config → age 加密 �
 
 ## 内存预算（64G 宿主机）
 
-Mongo 12G（wiredTiger cache）+ Meili 8G + NodeBB ~4G + Centrifugo ~2G + Redis 2G + 系统/页缓存 ~30G，已固化在 compose。
+Mongo 12G（wiredTiger cache）+ Meili 12G（上限，索引期峰值 4G）+ NodeBB 8G + Centrifugo 4G + Redis 2G（noeviction）+ BFF 512M（Rust 实测 ~5MB RSS）+ 系统/页缓存 ~25G，已固化在 compose。
 
 ## 许可证
 
