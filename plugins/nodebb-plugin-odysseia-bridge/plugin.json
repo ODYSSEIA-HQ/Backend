@@ -24,6 +24,11 @@
     { "hook": "action:group.update", "method": "onGroupUpdate" },
     { "hook": "action:group.rename", "method": "onGroupRename" },
     { "hook": "action:settings.set", "method": "onSettingsSet" },
-    { "hook": "filter:admin.header.build", "method": "onAdminHeader" }
+    { "hook": "filter:admin.header.build", "method": "onAdminHeader" },
+    { "hook": "filter:topic.post", "method": "onTopicPost" },
+    { "hook": "filter:topic.reply", "method": "onTopicReply" },
+    { "hook": "static:privileges.categories.init", "method": "onPrivilegesInit" },
+    { "hook": "filter:topic.getPosts", "method": "onTopicGetPosts" },
+    { "hook": "filter:messaging.getMessages", "method": "onMessagingGetMessages" }
   ]
 }

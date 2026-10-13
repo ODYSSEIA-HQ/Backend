@@ -8,6 +8,8 @@
  *   2. POST /centrifugo/subscribe —— Centrifugo subscribe proxy 回调，按频道前缀
  *                                    调 NodeBB 内部 API 做权威鉴权（fail-closed）
  *   3. POST /upload/presign   —— R2 预签名直传（普通桶 / R18 桶按帖子权限分流）
+ *   4. 全局限频               —— 内存滑动窗口双层（IP 暴刷层 + uid 配额层），
+ *                                  429 契约仿 Fluxer/Discord：X-RateLimit-* 头 + retry_after 秒级精度
  *
  * 不做的事：消息流代理——首屏走 NodeBB SSR/REST，实时增量走 Centrifugo，
  * BFF 只做"鉴权 + 发证"，无状态、可随时重启。
@@ -54,6 +56,41 @@ app.use('/vendor', express.static(path.join(__dirname, 'node_modules', 'centrifu
 	index: false,
 }));
 
+// ---------- 通用内存滑动窗口限频器 ----------
+// 单实例内存即可——BFF 无状态单副本部署，重启清零可接受（将来多副本再换 Redis 原子计数）
+// 命中返回 { retryAfterMs }，否则 null
+const rateHits = new Map(); // key -> number[]（窗口内时间戳）
+
+function rateCheck(key, windowMs, max) {
+	const now = Date.now();
+	const hits = (rateHits.get(key) || []).filter(t => now - t < windowMs);
+	if (hits.length >= max) {
+		rateHits.set(key, hits);
+		return { retryAfterMs: Math.max(1, hits[0] + windowMs - now) };
+	}
+	hits.push(now);
+	rateHits.set(key, hits);
+	if (rateHits.size > 50000) rateHits.clear(); // 防内存膨胀，限频精度可牺牲
+	return null;
+}
+
+function clientIp(req) {
+	// Caddy 只签可信代理层；上游头可伪造时退化为 socket 地址（fail-safe）
+	return (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || 'unknown';
+}
+
+function send429(res, retryAfterMs, scope) {
+	const sec = retryAfterMs / 1000;
+	res.set({
+		'Retry-After': String(Math.ceil(sec)),
+		'X-RateLimit-Scope': scope,
+	}).status(429).json({
+		code: 'RATE_LIMITED',
+		message: '请求过于频繁，请稍后再试',
+		retry_after: sec, // 秒级小数，客户端直接 setTimeout 即可
+	});
+}
+
 // ---------- NodeBB 会话解析：cookie → uid（游客为 0） ----------
 
 async function resolveUid(req) {
@@ -98,8 +135,17 @@ const canChatRoom = (roomId, uid) =>
 // ==================================================================
 
 app.get('/token', async (req, res) => {
+	// 第一层：IP 暴刷防护——未解析 uid 就拦住，防 /api/me 放大打 NodeBB
+	// 每个 token 请求 = 一次 NodeBB /api/me 回源，20 次/10s/IP 足以淹没论坛
+	const ipHit = rateCheck(`token:ip:${clientIp(req)}`, 10_000, 20);
+	if (ipHit) return send429(res, ipHit.retryAfterMs, 'ip');
+
 	const uid = await resolveUid(req);
 	if (!uid) return res.status(401).json({ error: 'login required' });
+
+	// 第二层：uid 配额——正常多端 + 自动续期远达不到 60/10min，超限即为脚本滥用
+	const uidHit = rateCheck(`token:uid:${uid}`, 10 * 60_000, 60);
+	if (uidHit) return send429(res, uidHit.retryAfterMs, 'user');
 
 	// 游客不连 WS：未登录浏览走 NodeBB SSR/REST，实时通道只服务注册成员
 	const token = jwt.sign({ sub: String(uid), iss: 'odysseia-bff' }, TOKEN_SECRET, {
@@ -176,29 +222,20 @@ const ALLOWED_TYPES = {
 	'video/mp4': 'mp4',
 };
 
-// 预签名限频：per-uid 内存滑动窗口（10 次/10 分钟），防 R2 key 喷洒与签名成本放大。
-// 单实例内存即可——BFF 无状态单副本部署，重启清零可接受
+// 预签名限频：uid 配额层（10 次/10 分钟），防 R2 key 喷洒与签名成本放大
 const PRESIGN_WINDOW_MS = 10 * 60 * 1000;
 const PRESIGN_MAX = 10;
-const presignHits = new Map(); // uid -> number[]（窗口内时间戳）
-
-function presignAllowed(uid) {
-	const now = Date.now();
-	const hits = (presignHits.get(uid) || []).filter(t => now - t < PRESIGN_WINDOW_MS);
-	if (hits.length >= PRESIGN_MAX) {
-		presignHits.set(uid, hits);
-		return false;
-	}
-	hits.push(now);
-	presignHits.set(uid, hits);
-	if (presignHits.size > 10000) presignHits.clear(); // 防内存膨胀，限频精度可牺牲
-	return true;
-}
 
 app.post('/upload/presign', async (req, res) => {
+	// IP 暴刷层：与 /token 同源，防匿名打 R2 签名成本
+	const ipHit = rateCheck(`presign:ip:${clientIp(req)}`, PRESIGN_WINDOW_MS, 30);
+	if (ipHit) return send429(res, ipHit.retryAfterMs, 'ip');
+
 	const uid = await resolveUid(req);
 	if (!uid) return res.status(401).json({ error: 'login required' });
-	if (!presignAllowed(uid)) return res.status(429).json({ error: 'too many requests' });
+
+	const uidHit = rateCheck(`presign:uid:${uid}`, PRESIGN_WINDOW_MS, PRESIGN_MAX);
+	if (uidHit) return send429(res, uidHit.retryAfterMs, 'user');
 
 	const { kind, tid, contentType } = req.body || {};
 	const ext = ALLOWED_TYPES[contentType];
@@ -230,6 +267,133 @@ app.post('/upload/presign', async (req, res) => {
 	// 注意：上传完成后 EXIF 剥离由 Cloudflare Image Resizing / R2 生命周期处理（架构 D10），
 	// 此处不做服务端中转——直传的意义就是零中转带宽
 	res.json({ url, key, bucket, expiresIn: PRESIGN_TTL });
+});
+
+// ==================================================================
+// 4. 私聊消息 cursor 分页（before/after 契约，优化无限滚动体验）
+// ==================================================================
+
+/**
+ * NodeBB 原生私聊消息 API 是 offset + 固定 50 条 + direction 语义，
+ * 前端无限滚动用「向上拉更早」时 direction=-1 换算别扭，且无法精确锚定某条消息。
+ * 此处加一层 BFF 适配，对外暴露 before/after cursor 契约（仿 Fluxer/Discord），
+ * 内部翻译成 NodeBB 的 start + direction 参数。
+ *
+ * 契约：
+ *   GET /bff/chat/{roomId}/messages?before=<messageId>&after=<messageId>&limit=1..100(默认50)
+ *   before: 拉比该消息更早的一页（向上滚动）→ NodeBB start=index+1, direction=-1
+ *   after:  拉比该消息更晚的一页（向下滚动/实时补漏）→ NodeBB start=index-1, direction=1
+ *   无 cursor: 拉最新一页（首屏）→ NodeBB start=0, direction=-1
+ *
+ * 响应统一降序（新→旧），前端 prepend/append 按 cursor 判断。
+ */
+
+/**
+ * 定位消息在房间内的 index（0-based 从旧到新）
+ * NodeBB 没有 by-mid 查 index 的 API，策略：先拉最新一页，若目标在页内则直接定位；
+ * 否则用 start 二分逼近（房间消息量通常 <10k，二分 14 次内收敛）。
+ * @param {number} roomId
+ * @param {number} targetMid
+ * @returns {Promise<number|null>} index 或 null（消息不存在）
+ */
+async function locateMessageIndex(roomId, targetMid) {
+	// 先拉最新一页（50 条），目标大概率在最新页内
+	const latest = await callNodeBB(`/api/v3/chats/${roomId}/messages?start=0&direction=-1`);
+	if (!latest || !Array.isArray(latest.messages)) return null;
+
+	const mid = Number(targetMid);
+	const inLatest = latest.messages.findIndex(m => Number(m.messageId || m.mid) === mid);
+	if (inLatest !== -1) {
+		// 最新页 direction=-1 返回降序，index = total - 1 - inLatest
+		// 但我们不知道 total，用近似：返回 0 表示"在最新页"，调用方直接 start=0
+		return 0;
+	}
+
+	// 不在最新页：二分逼近（NodeBB mid 单调递增，与 index 正相关）
+	// 上界：start=0 是最新，下界：start=MAX_SAFE_INTEGER 是最旧
+	let low = 0, high = 100000; // 10 万条私聊消息足够覆盖
+	while (low < high) {
+		const midPoint = Math.floor((low + high) / 2);
+		const page = await callNodeBB(
+			`/api/v3/chats/${roomId}/messages?start=${midPoint}&direction=-1`
+		);
+		if (!page || !Array.isArray(page.messages) || !page.messages.length) {
+			high = midPoint;
+			continue;
+		}
+		const found = page.messages.some(m => Number(m.messageId || m.mid) === mid);
+		if (found) return midPoint;
+		// 判断目标在 midPoint 之前还是之后：比较页内最大 mid
+		const pageMaxMid = Math.max(...page.messages.map(m => Number(m.messageId || m.mid)));
+		if (mid > pageMaxMid) {
+			high = midPoint; // 目标更新，往更小 start 找
+		} else {
+			low = midPoint + 1; // 目标更旧，往更大 start 找
+		}
+	}
+	return null;
+}
+
+app.get('/chat/:roomId/messages', async (req, res) => {
+	const uid = await resolveUid(req);
+	if (!uid) return res.status(401).json({ error: 'login required' });
+
+	const roomId = Number(req.params.roomId);
+	if (!roomId) return res.status(400).json({ error: 'roomId required' });
+
+	// 鉴权：必须是房间成员（复用内部 API）
+	const inRoom = await callNodeBB(`/api/v3/plugins/odysseia/can-chat/${roomId}/${uid}`);
+	if (!inRoom || !inRoom.canRead) return res.status(403).json({ error: 'not authorized' });
+
+	// 限频：私聊消息拉取比发帖轻，但防脚本全量爬历史
+	const ipHit = rateCheck(`chatmsg:ip:${clientIp(req)}`, 10_000, 30);
+	if (ipHit) return send429(res, ipHit.retryAfterMs, 'ip');
+
+	const { before, after, limit: rawLimit } = req.query;
+	const limit = Math.min(100, Math.max(1, Number(rawLimit) || 50));
+
+	let start = 0;
+	let direction = -1;
+
+	// cursor → start/direction 翻译：先定位 mid 对应的 index，再换算
+	if (before) {
+		const index = await locateMessageIndex(roomId, before);
+		if (index === null) return res.status(404).json({ error: 'message not found' });
+		start = index + 1;
+		direction = -1;
+	} else if (after) {
+		const index = await locateMessageIndex(roomId, after);
+		if (index === null) return res.status(404).json({ error: 'message not found' });
+		start = Math.max(0, index - 1);
+		direction = 1;
+	} else if (req.query.around) {
+		// around：跳到某消息前后各半，先定位再取窗口
+		const index = await locateMessageIndex(roomId, req.query.around);
+		if (index === null) return res.status(404).json({ error: 'message not found' });
+		const half = Math.floor(limit / 2);
+		start = Math.max(0, index - half);
+		direction = 1; // 取窗口内全部，再截 limit
+	}
+
+	const data = await callNodeBB(
+		`/api/v3/chats/${roomId}/messages?start=${start}&direction=${direction}`
+	);
+	if (!data || !Array.isArray(data.messages)) {
+		return res.status(502).json({ error: 'upstream unavailable' });
+	}
+
+	// 统一降序返回（NodeBB direction=-1 已是降序，direction=1 是升序需反转）
+	let messages = data.messages;
+	if (direction === 1) messages = messages.reverse();
+
+	res.json({
+		messages: messages.slice(0, limit),
+		// 游标推进：本页最旧/最新的 messageId，供下一页 before/after 使用
+		cursor: {
+			oldest: messages.length ? (messages[messages.length - 1].messageId || messages[messages.length - 1].mid) : null,
+			newest: messages.length ? (messages[0].messageId || messages[0].mid) : null,
+		},
+	});
 });
 
 // ==================================================================

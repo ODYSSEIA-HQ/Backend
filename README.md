@@ -226,6 +226,7 @@ bash scripts/backup.sh   # mongodump + uploads + nodebb_config → age 加密 �
 - [x] 订阅鉴权 proxy 化 + 共享密钥头 + uid 仅取服务端注入字段（防伪造）
 - [x] 内部 API 全部 X-Internal-Token（timingSafeEqual 比对），仅 compose 内网可达
 - [x] quiz token 一次性原子消费；verify / presign 滑动窗口限频
+- [x] 全局限频：bridge plugin 挂 `/api/*` IP 60 req/10s；BFF `/token` IP 20/10s + uid 60/10min；`/upload/presign` IP 30/10min + uid 10/10min——429 契约统一 `code/message/retry_after` + `Retry-After` 头（仿 Fluxer/Discord）
 - [x] 装饰配置全字段消毒，渲染零 innerHTML
 - [x] 上传 R2 预签名直传，服务器零中转带宽；连接 JWT TTL 2h 自动续期
 - [x] 备份 age 公钥加密私钥离线；Caddy 关闭访问日志
