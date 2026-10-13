@@ -64,6 +64,10 @@ function checkSetupFlagEnv() {
 		NODEBB_DB_PASSWORD: 'password',
 		NODEBB_DB_NAME: 'database',
 		NODEBB_DB_SSL: 'ssl',
+		// [odysseia 本地修改] 反代场景（Caddy）必须信任 X-Forwarded-For，
+		// 否则限流/日志全记成 Caddy 的 IP。经 setup 消费点（下方 L206 附近）
+		// 写入 config.json 的 trust_proxy
+		NODEBB_TRUST_PROXY: 'trust_proxy',
 	};
 
 	// Set setup values from env vars (if set)
@@ -204,7 +208,11 @@ async function completeConfigSetup(config) {
 	}
 
 	if (install.values && install.values.hasOwnProperty('trust_proxy')) {
-		config.trust_proxy = install.values.trust_proxy;
+		// [odysseia 本地修改] env 传入是字符串，config.json 必须落布尔——
+		// ip.js 用 `trustProxy === true` 严格判等，字符串 "true" 会掉进
+		// proxyaddr.compile('true') 抛 TypeError
+		const raw = install.values.trust_proxy;
+		config.trust_proxy = raw === 'true' ? true : raw === 'false' ? false : raw;
 	}
 
 	nconf.overrides(config);

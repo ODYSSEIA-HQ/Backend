@@ -24,6 +24,7 @@ function loadModule(...paths) {
 // 整帖重建 / 主帖重刷时读库用；常规写路径不触碰 NodeBB 模块（事件 payload 自足）
 const db = loadModule('./src/database');
 const posts = loadModule('./src/posts');
+const topics = loadModule('./src/topics');
 
 const client = new MeiliSearch({
 	host: process.env.MEILI_HOST || 'http://meilisearch:7700',
@@ -104,13 +105,17 @@ async function deleteTopic(tid) {
 	}
 }
 
-/** 整帖恢复回索引：zset tid:{tid}:posts 当前恰为活跃帖集合（单帖软删已移出），
- *  逐帖重建并按 mainPid 回填主帖 isMain / title */
+/** 整帖恢复回索引：pids 用上游 Topics.getPids（mainPid 前置 + zset 回帖）。
+ *  tid:{tid}:posts zset 只含回帖——主帖仅存于 topic:{tid} 的 mainPid 字段，
+ *  单主帖主题 zset 为空是上游预期，裸读 zset 会拿到空数组静默早退 */
 async function reindexTopic(tid, topicMeta) {
 	try {
-		if (!db || !posts || !tid) return;
-		const pids = await db.getSortedSetRange(`tid:${Number(tid)}:posts`, 0, -1);
-		if (!Array.isArray(pids) || !pids.length) return;
+		if (!db || !posts || !topics || !tid) return;
+		const pids = await topics.getPids(Number(tid));
+		if (!Array.isArray(pids) || !pids.length) {
+			console.warn('[odysseia-bridge] meili 整帖重建跳过：无 pids tid=' + tid);
+			return;
+		}
 		const postsData = await posts.getPostsFields(pids, ['pid', 'tid', 'cid', 'uid', 'content', 'timestamp']);
 		const docs = postsData.filter(Boolean).map((p) => {
 			const doc = toDoc(p);

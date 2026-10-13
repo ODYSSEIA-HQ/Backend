@@ -67,6 +67,9 @@ services:
       NODEBB_DB_USER: ${MONGO_INITDB_ROOT_USERNAME:?请在 .env 设置 MONGO_INITDB_ROOT_USERNAME}
       NODEBB_DB_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:?请在 .env 设置 MONGO_INITDB_ROOT_PASSWORD}
       NODEBB_DB_NAME: ${MONGO_INITDB_DATABASE:?请在 .env 设置 MONGO_INITDB_DATABASE}
+      # 反代场景必需：信任 Caddy 的 X-Forwarded-For，否则限流/日志全记成 Caddy IP
+      # （vendor patch：install.js envConfMap 的 NODEBB_TRUST_PROXY → config.json trust_proxy 布尔）
+      NODEBB_TRUST_PROXY: "true"
       # secret 无需环境变量：setup 自动生成并写入 config.json
       # ---- 桥接插件读取 ----
       CENTRIFUGO_API_URL: http://centrifugo:8000/api

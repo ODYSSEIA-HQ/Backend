@@ -175,6 +175,22 @@ debug_log() {
   echo "DEBUG: $message"
 }
 
+# [odysseia 本地修改] 自研插件落盘在 /opt/odysseia-plugins/（VOLUME 之外），每次启动 symlink
+# 进 node_modules。必须在 install_dependencies 之后调用：npm install 会把未登记的 symlink
+# 当 extraneous 包删掉（实测 "removed 2 packages"）。放卷外的好处：镜像升级后 node_modules
+# 卷内容过时也不受影响——symlink 每次启动重建，插件始终随镜像走。
+link_odysseia_plugins() {
+  local plugins_root="/opt/odysseia-plugins"
+  local nm="/usr/src/app/node_modules"
+  if [ -d "$plugins_root" ]; then
+    for plugin_dir in "$plugins_root"/*; do
+      [ -d "$plugin_dir" ] || continue
+      ln -sfn "$plugin_dir" "$nm/$(basename "$plugin_dir")"
+      debug_log "linked odysseia plugin: $(basename "$plugin_dir")"
+    done
+  fi
+}
+
 install_additional_plugins() {
   if [[ -n ${NODEBB_ADDITIONAL_PLUGINS} ]]; then
     # Create a local array to work with
@@ -218,6 +234,7 @@ main() {
   check_directory "$CONFIG_DIR"
   copy_or_link_files /usr/src/app "$CONFIG_DIR" "$PACKAGE_MANAGER"
   install_dependencies
+  link_odysseia_plugins
 
   debug_log "PACKAGE_MANAGER: $PACKAGE_MANAGER"
   debug_log "CONFIG location: $CONFIG"

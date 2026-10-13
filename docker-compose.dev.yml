@@ -42,6 +42,8 @@ services:
       NODEBB_DB_HOST: mongo
       NODEBB_DB_PORT: "27017"
       NODEBB_DB_NAME: odysseia
+      # dev 的 NodeBB 同样在 Caddy 反代后面，限流/日志要拿到真实客户端 IP
+      NODEBB_TRUST_PROXY: "true"
       # 演示 Mongo 免认证，故不传 DB_USER/DB_PASSWORD；secret 由 setup 自动生成
       # 桥接插件读取
       CENTRIFUGO_API_URL: http://centrifugo:8000/api
