@@ -39,6 +39,8 @@ function loadModule(...paths) {
 
 const userModule = loadModule('./src/user');
 const topicsModule = loadModule('./src/topics');
+const categoriesModule = loadModule('./src/categories');
+const privilegesModule = loadModule('./src/privileges');
 
 const plugin = {};
 
@@ -174,6 +176,38 @@ plugin.onMessagingGetMessages = async function (data) {
 
 // ---------- 帖子事件 → 聊天室广播 + 搜索索引 ----------
 
+/** 索引前补齐主帖元数据：title 存 topic hash（post hash 没有），isMain 只有
+ *  action:post.save 的 payload 自带（src/posts/create.js:83 实证）；
+ *  edit / restore 从库取的 post 无标记，对拍 mainPid 判定。
+ *  isMain === false（明确回复）短路，热路径零额外查询 */
+async function withTopicMeta(post) {
+	if (!post || !post.tid) return post;
+	if (post.isMain === false) return post;
+	if (post.isMain === true) {
+		if (!post.title && topicsModule && typeof topicsModule.getTopicField === 'function') {
+			try {
+				post.title = await topicsModule.getTopicField(post.tid, 'title') || '';
+			} catch (e) {
+				/* 取不到标题按无标题索引（titles 搜索不命中，正文不受影响） */
+			}
+		}
+		return post;
+	}
+	// isMain 未知：一次 getTopicFields 对拍（edit / restore 路径，频率远低于发帖）
+	if (topicsModule && typeof topicsModule.getTopicFields === 'function' && post.pid) {
+		try {
+			const { mainPid, title } = await topicsModule.getTopicFields(post.tid, ['mainPid', 'title']);
+			if (mainPid && Number(mainPid) === Number(post.pid)) {
+				post.isMain = true;
+				if (title) post.title = title;
+			}
+		} catch (e) {
+			/* 判定失败按普通帖索引 */
+		}
+	}
+	return post;
+}
+
 /** action:post.save：新消息（新楼层）。payload = { post, uid }（v4.x 源码 src/posts/create.js 实证） */
 plugin.onPostSave = async function (params) {
 	const postData = params && params.post;
@@ -211,7 +245,7 @@ plugin.onPostSave = async function (params) {
 			index: postData.index, // 楼层号，前端 "#1234" 定位用
 		},
 	});
-	search.indexPost(postData);
+	search.indexPost(await withTopicMeta(postData));
 };
 
 /** action:post.edit。payload = { post, ... }（src/posts/edit.js 实证） */
@@ -228,7 +262,8 @@ plugin.onPostEdit = async function (params) {
 			timestamp: postData.edited || postData.timestamp,
 		},
 	});
-	search.indexPost(postData);
+	// 编辑回帖不带 title：toDoc 的 merge 语义保留主帖已索引标题；编辑主帖则刷新
+	search.indexPost(await withTopicMeta(postData));
 };
 
 /** action:post.delete / restore。payload = { post, uid }（src/posts/delete.js 实证） */
@@ -244,8 +279,8 @@ plugin.onPostRestore = async function (params) {
 	const postData = params && params.post;
 	if (!postData || !postData.tid) return;
 	await publish(`topic:${postData.tid}`, { type: 'message.restore', pid: postData.pid });
-	// 恢复后回索引（postData 含 pid/tid/uid/content/timestamp，与 indexPost 契约一致）
-	search.indexPost(postData);
+	// 恢复后回索引（含主帖 title / isMain 回填——软删时文档已摘除，须全量重建该帖文档）
+	search.indexPost(await withTopicMeta(postData));
 };
 
 /** action:posts.purge（注意复数，v4.x 真名）。payload = { posts: [...], uid }（src/posts/delete.js 实证） */
@@ -269,6 +304,65 @@ plugin.onTopicsPurge = async function (params) {
 		await publish(`topic:${topicData.tid}`, { type: 'topic.purge', tid: topicData.tid });
 	}
 };
+
+/** action:topic.delete / restore。payload = { topic: topicData, uid }（src/topics/tools.js:58/60 实证，
+ *  topic 含 tid / cid / mainPid / title）——软删/恢复整帖同步索引，堵「软删帖全文残留
+ *  Meili 可被无权者搜到」与「恢复后搜不到」两个缺口 */
+plugin.onTopicDelete = async function (params) {
+	const topicData = params && params.topic;
+	if (!topicData || !topicData.tid) return;
+	await publish(`topic:${topicData.tid}`, { type: 'topic.delete', tid: topicData.tid });
+	// Meili 按 tid filter 批删（软删不动 tid:{tid}:posts，不能依赖 zset）
+	search.deleteTopic(topicData.tid);
+};
+
+plugin.onTopicRestore = async function (params) {
+	const topicData = params && params.topic;
+	if (!topicData || !topicData.tid) return;
+	await publish(`topic:${topicData.tid}`, { type: 'topic.restore', tid: topicData.tid });
+	// 回索引：zset tid:{tid}:posts 当前恰为活跃帖集合（单帖软删已移出）
+	search.reindexTopic(topicData.tid, topicData);
+};
+
+/** action:topic.edit。payload = { topic: newTopicData, uid }（src/posts/edit.js:179 实证，
+ *  newTopicData.oldTitle 为旧标题）——标题存 topic hash，改名须重刷主帖索引文档，
+ *  否则 titles 搜索命中旧标题 */
+plugin.onTopicEdit = function (params) {
+	const topicData = params && params.topic;
+	if (!topicData || !topicData.tid || !topicData.mainPid) return;
+	if (topicData.title && topicData.title !== topicData.oldTitle) {
+		search.reindexMainPost(topicData);
+	}
+};
+
+// ---------- 搜索：filter:search.query → Meilisearch（权限过滤在先，vendor 二次兜底在后） ----------
+
+/** filter:search.query。payload = { index: 'post'|'topic', content, matchWords, cid, uid, searchData, ids }（src/search.js 实证）
+ *  权限模型（双防线）：Meili 侧按搜索者可读 cid 集过滤（第一道，防元数据泄露 /
+ *  减 vendor 全量过滤负担），vendor 拿到 ids 后还有 privileges.posts.filter('topics:read') 兜底 */
+plugin.onSearchQuery = async function (payload) {
+	if (!payload || !payload.searchData) return payload;
+	try {
+		const uid = Number(payload.searchData.uid) || 0;
+		const allowedCids = await readableCids(uid);
+		payload.ids = (await search.searchQuery(payload, allowedCids)).ids;
+	} catch (e) {
+		console.error('[odysseia-bridge] meili 搜索失败', e.message);
+		payload.ids = []; // fail-closed：引擎故障时宁可搜不到，不回退无过滤查询
+	}
+	return payload; // filter hook 契约：原样放行
+};
+
+/** uid → 可读板块集（read 权限 + 非 disabled；R18/R18G 对无权者自然出局） */
+async function readableCids(uid) {
+	if (!categoriesModule || !privilegesModule) return [];
+	try {
+		const allCids = await categoriesModule.getAllCidsFromSet('categories:cid');
+		return await privilegesModule.categories.filterCids('read', allCids, uid);
+	} catch (e) {
+		return []; // 查询失败按零可读处理（fail-closed）
+	}
+}
 
 // ---------- 私聊事件 → chat 频道广播 ----------
 // filter:messaging.notify（v4.x 唯一形态，无 action 版；src/messaging/notifications.js 实证）

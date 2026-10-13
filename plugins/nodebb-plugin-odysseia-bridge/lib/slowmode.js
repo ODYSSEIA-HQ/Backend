@@ -32,6 +32,9 @@ const user = loadModule('./src/user');
 
 const SLOWMODE_FIELD = 'slowmodeSeconds';
 
+// 冷却键条目保留期：超出即被清理（须 >= 管理员可设的最大冷却秒数）
+const COOLDOWN_RETENTION_MS = 30 * 24 * 3600 * 1000;
+
 /**
  * 读取 category 的 slowmode 配置（秒）
  * @param {number} cid
@@ -60,7 +63,17 @@ async function setSlowmodeSeconds(cid, seconds) {
 }
 
 /**
- * 检查用户是否受 slowmode 限制
+ * 检查用户是否受 slowmode 限制（通过即占位，fail-closed）
+ *
+ * 存储：zset `slowmode:category:{cid}`，member = uid，score = 上次放行时刻。
+ * 不扫 posts/topics 集合——旧实现倒序扫各 50 条找 uid 有盲区（活跃板块
+ * 上一次发帖跌出窗口即漏判），且软删帖移出 cid:{cid}:pids 后等同"没发过"
+ * （删帖刷冷却）。冷却键与帖子存废解耦，一次 zscore 直查。
+ *
+ * 占位发生在校验时刻而非帖子落库后：NodeBB db 抽象层无 setNX 原语，
+ * zscore→zadd 之间理论上有毫秒级 TOCTOU 窗口；本模块语义是防连点，
+ * 不是安全边界（那是 BFF 限频的职责），可接受。
+ *
  * @param {number} uid
  * @param {number} cid
  * @returns {Promise<{allowed: boolean, retryAfterMs?: number}>}
@@ -79,68 +92,26 @@ async function checkSlowmode(uid, cid) {
 		/* 权限查询失败时保守放行，不阻断正常用户 */
 	}
 
-	// 查该用户在本 category 的最近发帖时间
 	if (!db) return { allowed: true };
-	const lastPostTime = await getLastPostTimeInCategory(uid, cid);
-	if (!lastPostTime) return { allowed: true };
-
+	const key = `slowmode:category:${Number(cid)}`;
+	const member = String(Number(uid));
 	const now = Date.now();
 	const cooldownMs = seconds * 1000;
-	const elapsed = now - lastPostTime;
-	if (elapsed >= cooldownMs) return { allowed: true };
 
-	return {
-		allowed: false,
-		retryAfterMs: cooldownMs - elapsed,
-	};
-}
-
-/**
- * 查询用户在某 category 的最近发帖时间
- * 策略：从 cid:{cid}:tids 和 cid:{cid}:pids 倒序扫，找到 uid 匹配的第一条。
- * 比查 uid:{uid}:topics/posts 再过滤 cid 更准（不会漏判跨 category 发帖）。
- * @param {number} uid
- * @param {number} cid
- * @returns {Promise<number>} 0 = 无记录
- */
-async function getLastPostTimeInCategory(uid, cid) {
-	if (!db) return 0;
-	try {
-		const targetUid = Number(uid);
-		const targetCid = Number(cid);
-
-		// 扫 topic：cid:{cid}:tids 按 timestamp 倒序，逐条查 uid
-		const recentTids = await db.getSortedSetRevRange(`cid:${targetCid}:tids`, 0, 50);
-		if (recentTids && recentTids.length) {
-			const topicDocs = await db.getObjects(
-				recentTids.map(tid => `topic:${tid}`),
-				['uid', 'timestamp']
-			);
-			for (const t of topicDocs) {
-				if (t && Number(t.uid) === targetUid) {
-					return Number(t.timestamp) || 0;
-				}
-			}
-		}
-
-		// 扫 post：cid:{cid}:pids 按 timestamp 倒序，逐条查 uid
-		const recentPids = await db.getSortedSetRevRange(`cid:${targetCid}:pids`, 0, 50);
-		if (recentPids && recentPids.length) {
-			const postDocs = await db.getObjects(
-				recentPids.map(pid => `post:${pid}`),
-				['uid', 'timestamp']
-			);
-			for (const p of postDocs) {
-				if (p && Number(p.uid) === targetUid) {
-					return Number(p.timestamp) || 0;
-				}
-			}
-		}
-
-		return 0;
-	} catch (e) {
-		return 0;
+	// O(1) 直查该用户冷却键
+	const lastAllowedAt = await db.sortedSetScore(key, member);
+	if (lastAllowedAt && now - Number(lastAllowedAt) < cooldownMs) {
+		return {
+			allowed: false,
+			retryAfterMs: cooldownMs - (now - Number(lastAllowedAt)),
+		};
 	}
+
+	// 通过即占位；顺手清过期条目防 zset 无界膨胀（score 传字符串数字，
+	// 与 mongo/redis 后端 parseFloat 兼容，同 quiz.js 范式）
+	await db.sortedSetAdd(key, now, member);
+	await db.sortedSetsRemoveRangeByScore([key], '-inf', String(now - COOLDOWN_RETENTION_MS));
+	return { allowed: true };
 }
 
 /**
