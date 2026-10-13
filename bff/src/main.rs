@@ -610,17 +610,24 @@ struct ChatMessagesQuery {
 	limit: Option<String>,
 }
 
-/// 定位消息在房间内的 index（0-based 从旧到新）
-/// 走 NodeBB 插件内部 API（bridge lib/internal.js）直接查 sorted set rank，
-/// 一次回源替代原先的「最新页 + 二分逼近」探测法（最多 14 次）。
+/// 定位消息在房间内的 revOffset（从新往旧 0-based：0=最新消息）
+/// 走 NodeBB 插件内部 API（bridge lib/internal.js）一次回源拿到 rank/card，
+/// 换算 revOffset = card - 1 - rank。
+/// 用 card（sortedSetCard，随 purge 递减）而非房间对象 messageCount（purge 不减、虚高），
+/// 彻底绕开 NodeBB direction 模式的 msgCount - start 换算坑。
 /// 返回 None = 消息不存在（或 NodeBB 不可达，fail-closed 404）。
-async fn locate_message_index(state: &AppState, room_id: u64, target_mid: u64) -> Option<u64> {
+async fn locate_message_rev_offset(state: &AppState, room_id: u64, target_mid: u64) -> Option<u64> {
 	let r = call_nodebb(
 		state,
 		&format!("/api/v3/plugins/odysseia/chat-index/{}/{}", room_id, target_mid),
 	)
 	.await?;
-	r.get("index").and_then(|v| v.as_u64())
+	let rank = r.get("rank").and_then(|v| v.as_u64())?;
+	let card = r.get("card").and_then(|v| v.as_u64())?;
+	if rank >= card {
+		return None; // 数据异常防御
+	}
+	Some(card - 1 - rank)
 }
 
 async fn get_chat_messages(
@@ -657,18 +664,24 @@ async fn get_chat_messages(
 		.unwrap_or(50)
 		.clamp(1, 100);
 
-	let mut start: u64 = 0;
-	let mut direction: i32 = -1;
+	// ---- cursor → NodeBB 原始 start/stop 翻译 ----
+	// NodeBB listMessages 有两种模式：
+	//   A. direction 模式：start 经 msgCount - start 换算（purge 后 messageCount 虚高 → 错位，弃用）
+	//   B. 原始模式（无 direction）：getMessages(start, stop) = RevRange(start..stop) + reverse → 升序返回
+	// 我们统一走 B：start/stop 都是「从新往旧」的 0-based RevRange 偏移（0=最新），
+	// 拿到升序数组后在本端反转为降序。绕开 direction 模式的全部换算坑。
+	let mut start: i64 = 0; // RevRange offset（0 = 最新）
+	let mut stop: i64 = (limit as i64) - 1;
 
-	// cursor → start/direction 翻译：先定位 mid 对应的 index，再换算
 	if let Some(before) = q.before.as_deref() {
 		let Some(target) = before.parse::<u64>().ok() else {
 			return err_json(StatusCode::BAD_REQUEST, serde_json::json!({ "error": "invalid before" }));
 		};
-		match locate_message_index(&state, room_id, target).await {
-			Some(index) => {
-				start = index + 1;
-				direction = -1;
+		match locate_message_rev_offset(&state, room_id, target).await {
+			Some(rev) => {
+				// before=目标：拉比目标更旧的一页 → RevRange(rev+1 .. rev+limit)
+				start = (rev as i64) + 1;
+				stop = (rev as i64) + (limit as i64);
 			}
 			None => return err_json(StatusCode::NOT_FOUND, serde_json::json!({ "error": "message not found" })),
 		}
@@ -676,31 +689,48 @@ async fn get_chat_messages(
 		let Some(target) = after.parse::<u64>().ok() else {
 			return err_json(StatusCode::BAD_REQUEST, serde_json::json!({ "error": "invalid after" }));
 		};
-		match locate_message_index(&state, room_id, target).await {
-			Some(index) => {
-				start = index.saturating_sub(1);
-				direction = 1;
+		match locate_message_rev_offset(&state, room_id, target).await {
+			Some(rev) => {
+				// after=目标：拉比目标更新的 limit 条 → RevRange(rev-limit .. rev-1)
+				start = (rev as i64) - (limit as i64);
+				stop = (rev as i64) - 1;
 			}
 			None => return err_json(StatusCode::NOT_FOUND, serde_json::json!({ "error": "message not found" })),
 		}
 	} else if let Some(around) = q.around.as_deref() {
-		// around：跳到某消息前后各半，先定位再取窗口
+		// around：跳到某消息前后各半
 		let Some(target) = around.parse::<u64>().ok() else {
 			return err_json(StatusCode::BAD_REQUEST, serde_json::json!({ "error": "invalid around" }));
 		};
-		match locate_message_index(&state, room_id, target).await {
-			Some(index) => {
-				let half = (limit / 2) as u64;
-				start = index.saturating_sub(half);
-				direction = 1; // 取窗口内全部，再截 limit
+		match locate_message_rev_offset(&state, room_id, target).await {
+			Some(rev) => {
+				let half = (limit / 2) as i64;
+				start = (rev as i64) - half;
+				stop = (rev as i64) + (limit as i64 - 1 - half);
 			}
 			None => return err_json(StatusCode::NOT_FOUND, serde_json::json!({ "error": "message not found" })),
 		}
 	}
+	if start < 0 {
+		// 目标太靠新（前页不足 limit）：clamp 到 0，stop 平移保窗口宽
+		stop += start;
+		start = 0;
+	}
+	if stop < start {
+		// after 目标就是最新消息（rev=0）：没有更新的消息，返回空页
+		return Json(serde_json::json!({
+			"messages": [],
+			"cursor": { "oldest": null, "newest": null },
+		}))
+		.into_response();
+	}
 
+	// 走插件内部 chat-messages 端点（Messaging.getMessages 直调）：
+	// start/count = RevRange 偏移（0=最新），升序返回，非公开房间自动含加入时间隐私边界
+	let count = (stop - start + 1) as u64;
 	let data = call_nodebb(
 		&state,
-		&format!("/api/v3/chats/{}/messages?start={}&direction={}", room_id, start, direction),
+		&format!("/api/v3/plugins/odysseia/chat-messages/{}/{}/{}/{}", room_id, uid, start, count),
 	)
 	.await;
 	let Some(data) = data else {
@@ -710,10 +740,8 @@ async fn get_chat_messages(
 		return err_json(StatusCode::BAD_GATEWAY, serde_json::json!({ "error": "upstream unavailable" }));
 	};
 
-	// 统一降序返回（NodeBB direction=-1 已是降序，direction=1 是升序需反转）
-	if direction == 1 {
-		messages.reverse();
-	}
+	// 统一降序返回（内部端点给的是升序，反转一次；cursor 越界时不足 limit 属正常）
+	messages.reverse();
 
 	let oldest = messages
 		.last()

@@ -16,11 +16,14 @@ scrape_configs:
     static_configs:
       - targets: ['centrifugo:8000']
 
-  # Meilisearch v1.12 内置 /metrics（需 master key，用 params 携带）
+  # Meilisearch v1.12 内置 /metrics（要求 Authorization: Bearer <master-key>）
+  # 注意：Prometheus 配置不支持环境变量展开，__MEILI_MASTER_KEY__ 为占位符，
+  # 由 docker-compose 中 prometheus 服务的 entrypoint（sed）在启动时注入。
+  # authorization 必须是嵌套结构，平铺的 authorization_credentials 会导致启动失败。
   - job_name: meilisearch
     metrics_path: /metrics
-    authorization_credentials: ${MEILI_MASTER_KEY}
-    # Meili 的 /metrics 要求 Authorization: Bearer <master-key>
+    authorization:
+      credentials: __MEILI_MASTER_KEY__
     static_configs:
       - targets: ['meilisearch:7700']
 

@@ -291,17 +291,19 @@ app.post('/upload/presign', async (req, res) => {
  */
 
 /**
- * 定位消息在房间内的 index（0-based 从旧到新）
- * 走 NodeBB 插件内部 API（bridge lib/internal.js）直接查 chat:room:{roomId}:mids
- * 的 rank（score=timestamp 升序，rank 即 index），一次回源。
+ * 定位消息在房间内的 revOffset（从新往旧 0-based：0=最新消息）
+ * 走 NodeBB 插件内部 API（bridge lib/internal.js）一次回源拿到 rank/card，
+ * 换算 revOffset = card - 1 - rank。用 card（sortedSetCard）而非房间对象
+ * messageCount（purgeMessage 不减它、历史房间虚高），绕开 NodeBB direction
+ * 模式 msgCount - start 换算坑。
  * @param {number} roomId
  * @param {number} targetMid
- * @returns {Promise<number|null>} index 或 null（消息不存在）
+ * @returns {Promise<number|null>} revOffset 或 null（消息不存在）
  */
-async function locateMessageIndex(roomId, targetMid) {
+async function locateMessageRevOffset(roomId, targetMid) {
 	const r = await callNodeBB(`/api/v3/plugins/odysseia/chat-index/${roomId}/${targetMid}`);
-	if (!r || typeof r.index !== 'number') return null;
-	return r.index;
+	if (!r || typeof r.rank !== 'number' || typeof r.card !== 'number' || r.rank >= r.card) return null;
+	return r.card - 1 - r.rank;
 }
 
 app.get('/chat/:roomId/messages', async (req, res) => {
@@ -322,42 +324,51 @@ app.get('/chat/:roomId/messages', async (req, res) => {
 	const { before, after, limit: rawLimit } = req.query;
 	const limit = Math.min(100, Math.max(1, Number(rawLimit) || 50));
 
+	// ---- cursor → NodeBB 原始 start/count 翻译 ----
+	// start/count = RevRange 偏移（0=最新），走插件内部 chat-messages 端点
+	// （Messaging.getMessages 直调：升序返回 + 非公开房间自动含加入时间隐私边界）
 	let start = 0;
-	let direction = -1;
+	let count = limit;
 
-	// cursor → start/direction 翻译：先定位 mid 对应的 index，再换算
 	if (before) {
-		const index = await locateMessageIndex(roomId, before);
-		if (index === null) return res.status(404).json({ error: 'message not found' });
-		start = index + 1;
-		direction = -1;
+		const rev = await locateMessageRevOffset(roomId, before);
+		if (rev === null) return res.status(404).json({ error: 'message not found' });
+		// before=目标：拉比目标更旧的一页 → RevRange(rev+1 起，limit 条)
+		start = rev + 1;
+		count = limit;
 	} else if (after) {
-		const index = await locateMessageIndex(roomId, after);
-		if (index === null) return res.status(404).json({ error: 'message not found' });
-		start = Math.max(0, index - 1);
-		direction = 1;
+		const rev = await locateMessageRevOffset(roomId, after);
+		if (rev === null) return res.status(404).json({ error: 'message not found' });
+		// after=目标：拉比目标更新的 limit 条 → RevRange(rev-limit 起，至 rev-1)
+		count = Math.min(limit, rev);
+		start = rev - count;
 	} else if (req.query.around) {
-		// around：跳到某消息前后各半，先定位再取窗口
-		const index = await locateMessageIndex(roomId, req.query.around);
-		if (index === null) return res.status(404).json({ error: 'message not found' });
+		const rev = await locateMessageRevOffset(roomId, req.query.around);
+		if (rev === null) return res.status(404).json({ error: 'message not found' });
+		// around：目标居中（前半=更新的，后半=更旧的）
 		const half = Math.floor(limit / 2);
-		start = Math.max(0, index - half);
-		direction = 1; // 取窗口内全部，再截 limit
+		start = Math.max(0, rev - half);
+		const stop = rev + (limit - 1 - half);
+		count = stop - start + 1;
+	}
+
+	if (count <= 0) {
+		// after 目标就是最新消息（rev=0）：没有更新的消息，空页
+		return res.json({ messages: [], cursor: { oldest: null, newest: null } });
 	}
 
 	const data = await callNodeBB(
-		`/api/v3/chats/${roomId}/messages?start=${start}&direction=${direction}`
+		`/api/v3/plugins/odysseia/chat-messages/${roomId}/${uid}/${start}/${count}`
 	);
 	if (!data || !Array.isArray(data.messages)) {
 		return res.status(502).json({ error: 'upstream unavailable' });
 	}
 
-	// 统一降序返回（NodeBB direction=-1 已是降序，direction=1 是升序需反转）
-	let messages = data.messages;
-	if (direction === 1) messages = messages.reverse();
+	// 统一降序返回（内部端点给的是升序，反转一次）
+	const messages = data.messages.slice(0, limit).reverse();
 
 	res.json({
-		messages: messages.slice(0, limit),
+		messages,
 		// 游标推进：本页最旧/最新的 messageId，供下一页 before/after 使用
 		cursor: {
 			oldest: messages.length ? (messages[messages.length - 1].messageId || messages[messages.length - 1].mid) : null,

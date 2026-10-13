@@ -8,7 +8,8 @@ FROM rust:1-slim AS builder
 WORKDIR /build
 
 # 先拷依赖清单，利用 Docker 层缓存（源码改动不重编译依赖）
-COPY Cargo.toml ./
+# Cargo.lock 入库：依赖版本可复现，避免 CI 构建漂移
+COPY Cargo.toml Cargo.lock ./
 # 声明 src/main.rs 占位，让 cargo 只解析依赖
 RUN mkdir -p src && echo 'fn main() {}' > src/main.rs && cargo build --release 2>/dev/null || true
 COPY src ./src

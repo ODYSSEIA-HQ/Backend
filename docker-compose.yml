@@ -186,11 +186,18 @@ services:
     image: prom/prometheus:v3.1.0
     restart: unless-stopped
     volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.tpl.yml:ro
       - prometheus_data:/prometheus
-    command:
-      - --config.file=/etc/prometheus/prometheus.yml
-      - --storage.tsdb.retention.time=30d
+    # Prometheus 配置不支持环境变量展开，Meili master key 由容器内 sh 在启动时替换。
+    # 双 $$：compose 只做一层展开，$$ 传给容器 shell，运行时才替换（密钥不烤进 inspect 可见的命令行）。
+    # sed 用 | 做分隔符（密钥若含 / 不会截断）；exec 让 prometheus 接管 PID 1，
+    # SIGTERM 优雅退出——否则 sh 不转发信号，每次 stop 都要等 10s 超时强杀。
+    environment:
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:?请在 .env 设置 MEILI_MASTER_KEY}
+    entrypoint: >-
+      sh -c 'sed "s|__MEILI_MASTER_KEY__|$$MEILI_MASTER_KEY|" /etc/prometheus/prometheus.tpl.yml
+      > /tmp/prometheus.yml && exec /bin/prometheus --config.file=/tmp/prometheus.yml
+      --storage.tsdb.retention.time=30d'
     mem_limit: 2g
 
   grafana:
