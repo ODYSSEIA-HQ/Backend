@@ -1,0 +1,274 @@
+'use strict';
+
+const fs = require('fs');
+const os = require('os');
+const async = require('async');
+const winston = require('winston');
+const postcss = require('postcss');
+const autoprefixer = require('autoprefixer');
+const rtlcss = require('rtlcss');
+const sass = require('../utils').getSass();
+
+const fork = require('./debugFork');
+require('../file'); // for graceful-fs
+
+const Minifier = module.exports;
+
+const pool = [];
+const free = [];
+
+let maxThreads = 0;
+let pendingRequests = 0;
+
+Object.defineProperty(Minifier, 'maxThreads', {
+	get: function () {
+		return maxThreads;
+	},
+	set: function (val) {
+		maxThreads = val;
+		if (!process.env.minifier_child) {
+			winston.verbose(`[minifier] utilizing a maximum of ${maxThreads} additional threads`);
+		}
+	},
+	configurable: true,
+	enumerable: true,
+});
+
+Minifier.maxThreads = Math.max(1, os.cpus().length - 1);
+
+Minifier.killAll = function () {
+	if (pendingRequests > 0) {
+		return new Promise((resolve) => {
+			const checkInterval = setInterval(() => {
+				if (pendingRequests <= 0) {
+					clearInterval(checkInterval);
+					doKillAll();
+					resolve();
+				}
+			}, 50);
+		});
+	}
+	doKillAll();
+	return Promise.resolve();
+};
+
+function doKillAll() {
+	pool.forEach((child) => {
+		child.kill('SIGTERM');
+	});
+
+	pool.length = 0;
+	free.length = 0;
+}
+
+function getChild() {
+	while (free.length) {
+		const proc = free.shift();
+		if (proc.connected && !proc.killed) {
+			return proc;
+		}
+		removeChild(proc);
+	}
+
+	const proc = fork(__filename, [], {
+		cwd: __dirname,
+		env: {
+			minifier_child: true,
+		},
+	});
+	proc.once('exit', () => removeChild(proc));
+	pool.push(proc);
+
+	return proc;
+}
+
+function freeChild(proc) {
+	proc.removeAllListeners('message');
+	proc.removeAllListeners('error');
+	if (proc.connected && !proc.killed) {
+		free.push(proc);
+	} else {
+		removeChild(proc);
+	}
+}
+
+function removeChild(proc) {
+	const i = pool.indexOf(proc);
+	if (i !== -1) {
+		pool.splice(i, 1);
+	}
+	const j = free.indexOf(proc);
+	if (j !== -1) {
+		free.splice(j, 1);
+	}
+
+	if (proc.connected) {
+		proc.disconnect();
+	}
+	proc.kill();
+}
+
+function forkAction(action) {
+	return new Promise((resolve, reject) => {
+		const proc = getChild();
+
+		pendingRequests += 1;
+
+		if (!proc.connected || proc.killed) {
+			pendingRequests -= 1;
+			return reject(new Error('Child process is not connected or has been killed'));
+		}
+		const onMessage = (message) => {
+			cleanup();
+			freeChild(proc);
+			pendingRequests -= 1;
+
+			if (message.type === 'error') {
+				return reject(new Error(message.message));
+			}
+			if (message.type === 'end') {
+				return resolve(message.result);
+			}
+		};
+
+		const onError = (err) => {
+			cleanup();
+			freeChild(proc);
+			pendingRequests -= 1;
+			reject(err);
+		};
+
+		function cleanup() {
+			proc.removeListener('message', onMessage);
+			proc.removeListener('error', onError);
+		}
+
+		proc.on('message', onMessage);
+		proc.on('error', onError);
+		try {
+			proc.send({
+				type: 'action',
+				action: action,
+			});
+		} catch (err) {
+			cleanup();
+			removeChild(proc);
+			reject(err);
+		}
+	});
+}
+
+const actions = {};
+
+if (process.env.minifier_child) {
+	process.on('message', async (message) => {
+		if (message.type === 'action') {
+			const { action } = message;
+			if (typeof actions[action.act] !== 'function') {
+				process.send({
+					type: 'error',
+					message: 'Unknown action',
+				});
+				return;
+			}
+			try {
+				const result = await actions[action.act](action);
+				process.send({
+					type: 'end',
+					result: result,
+				});
+			} catch (err) {
+				process.send({
+					type: 'error',
+					message: err.stack || err.message || 'unknown error',
+				});
+			}
+		}
+	});
+}
+
+async function executeAction(action, fork) {
+	if (fork && (pool.length - free.length) < Minifier.maxThreads) {
+		return await forkAction(action);
+	}
+	if (typeof actions[action.act] !== 'function') {
+		throw new Error('Unknown action');
+	}
+	return await actions[action.act](action);
+}
+
+actions.concat = async function concat(data) {
+	if (data.files && data.files.length) {
+		const files = await async.mapLimit(data.files, 1000, async ref => await fs.promises.readFile(ref.srcPath, 'utf8'));
+		const output = files.join('\n;');
+		await fs.promises.writeFile(data.destPath, output);
+	}
+};
+
+Minifier.js = {};
+Minifier.js.bundle = async function (data, fork) {
+	return await executeAction({
+		act: 'concat',
+		files: data.files,
+		filename: data.filename,
+		destPath: data.destPath,
+	}, fork);
+};
+
+actions.buildCSS = async function buildCSS(data) {
+	let css = '';
+	try {
+		const opts = {
+			loadPaths: data.paths,
+			importers: [new sass.NodePackageImporter()],
+		};
+		if (data.minify) {
+			opts.silenceDeprecations = [
+				'legacy-js-api', 'color-functions',
+				'global-builtin', 'import', 'if-function',
+			];
+		}
+		const scssOutput = await sass.compileStringAsync(data.source, opts);
+		css = scssOutput.css.toString();
+	} catch (err) {
+		console.error(err.stack);
+	}
+
+
+	async function processScss(direction) {
+		const postcssArgs = direction === 'rtl' ? [rtlcss(), autoprefixer] : [autoprefixer];
+		const result = await postcss(postcssArgs).process(css, {
+			from: undefined,
+		});
+		if (!data.minify) {
+			return result;
+		}
+		const minified = await sass.compileStringAsync(result.css, {
+			syntax: 'css',
+			style: 'compressed',
+		});
+		return { css: minified.css };
+	}
+
+	const [ltrresult, rtlresult] = await Promise.all([
+		processScss('ltr'),
+		processScss('rtl'),
+	]);
+
+	return {
+		ltr: { code: ltrresult.css },
+		rtl: { code: rtlresult.css },
+	};
+};
+
+Minifier.css = {};
+Minifier.css.bundle = async function (source, paths, minify, fork) {
+	return await executeAction({
+		act: 'buildCSS',
+		source: source,
+		paths: paths,
+		minify: minify,
+	}, fork);
+};
+
+require('../promisify')(exports);

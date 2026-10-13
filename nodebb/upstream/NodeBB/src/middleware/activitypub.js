@@ -1,0 +1,211 @@
+'use strict';
+
+const db = require('../database');
+const user = require('../user');
+const meta = require('../meta');
+const privileges = require('../privileges');
+const activitypub = require('../activitypub');
+const analytics = require('../analytics');
+const helpers = require('./helpers');
+
+const middleware = module.exports;
+
+middleware.enabled = async (req, res, next) => next(!meta.config.activitypubEnabled ? 'route' : undefined);
+
+middleware.pageview = async (req, res, next) => {
+	await analytics.apPageView({ ip: req.ip });
+	next();
+};
+
+middleware.assertS2S = async function (req, res, next) {
+	// For whatever reason, express accepts does not recognize "profile" as a valid differentiator
+	// Therefore, manual header parsing is used here.
+	let { accept, 'content-type': contentType } = req.headers;
+	if (!(accept || contentType)) {
+		return next('route');
+	}
+
+	// Normalize content-type
+	if (contentType) {
+		contentType = contentType.trim().replace(/\s*;\s*/g, ';'); // spec allows spaces around semi-colon
+	}
+
+	const pass = activitypub.helpers.assertAccept(accept) ||
+		(contentType && activitypub._constants.acceptableTypes.includes(contentType));
+
+	if (!pass) {
+		return next('route');
+	}
+
+	next();
+};
+
+middleware.verify = async function (req, res, next) {
+	// Skip verification for GET /actor
+	if (req.method === 'GET' && req.path === '/actor') {
+		return next();
+	}
+
+	// Verifies the HTTP Signature if present (required for POST, optional for GET)
+	if (req.headers.hasOwnProperty('signature')) {
+		// `verified` is the keyId that passed cryptographic verification (or false).
+		// Caller identity MUST be derived from this value — never re-parse the raw
+		// Signature header, which can be crafted to disagree with the spec parser.
+		const verified = await activitypub.verify(req);
+		if (!verified) {
+			activitypub.helpers.log('[middleware/activitypub] HTTP signature verification failed.');
+			if (req.method === 'POST') {
+				return res.sendStatus(400);
+			}
+			// Signed GET with invalid signature: treat as anonymous and proceed
+			activitypub.helpers.log('[middleware/activitypub] Treating signed GET as anonymous.');
+			return next();
+		}
+
+		// Set calling user from the verified keyId (draft `keyId` or RFC 9421 `keyid`)
+		req.apKeyId = verified;
+		req.uid = verified.replace(/#.*$/, '');
+
+		activitypub.helpers.log('[middleware/activitypub] HTTP signature verification passed.');
+	} else if (req.method === 'POST') {
+		// HTTP Signatures are mandatory for POST (ActivityPub S2S spec)
+		activitypub.helpers.log('[middleware/activitypub] HTTP signature required for POST but not present.');
+		return res.sendStatus(401);
+	} else {
+		activitypub.helpers.log('[middleware/activitypub] HTTP signature verification skipped (GET).');
+	}
+	next();
+};
+
+middleware.assertPayload = helpers.try(async function (req, res, next) {
+	// Checks the validity of the incoming payload against the sender and rejects on failure
+	activitypub.helpers.log('[middleware/activitypub] Validating incoming payload...');
+
+	// Reject from banned users
+	const isBanned = await user.bans.isBanned(req.uid);
+	if (isBanned) {
+		return res.sendStatus(403);
+	}
+
+	// Sanity-check payload schema
+	const required = ['id', 'type', 'actor', 'object'];
+	if (!required.every(prop => req.body.hasOwnProperty(prop))) {
+		activitypub.helpers.log('[middleware/activitypub] Request body missing required properties.');
+		return res.sendStatus(400);
+	}
+	activitypub.helpers.log('[middleware/activitypub] Request body check passed.');
+
+	// History check (w/in last 10 seconds)
+	const seenTimestamp = await db.sortedSetScore('activities:datetime', req.body.id);
+	if (seenTimestamp && (Date.now() - seenTimestamp) < 10000) {
+		activitypub.helpers.log(`[middleware/activitypub] Activity already seen, ignoring (${req.body.id}).`);
+		return res.sendStatus(200);
+	}
+
+	let { actor, object } = req.body;
+
+	// Actor normalization
+	if (typeof actor === 'object' && actor.hasOwnProperty('id')) {
+		actor = actor.id;
+		req.body.actor = actor;
+	}
+	if (Array.isArray(actor)) {
+		actor = actor.map(a => (typeof a === 'string' ? a : a.id));
+		req.body.actor = actor;
+	}
+
+	// Domain check
+	const { hostname } = new URL(actor);
+	const result = await activitypub.instances.isAllowed(hostname);
+	activitypub.instances.log(hostname);
+
+	if (!result.allowed) {
+		activitypub.helpers.log(`[middleware/activitypub] Blocked incoming activity from ${hostname}.`);
+		return res.sendStatus(403);
+	}
+
+	// Origin checking
+	if (typeof object !== 'string' && object.hasOwnProperty('id')) {
+		const actorHostnames = Array.isArray(actor) ? actor.map(a => new URL(a).hostname) : [new URL(actor).hostname];
+		const objectHostname = new URL(object.id).hostname;
+		// require that all actors have the same hostname as the object for now
+		if (!actorHostnames.every(actorHostname => actorHostname === objectHostname)) {
+			activitypub.helpers.log('[middleware/activitypub] Origin check failed, stripping object down to id.');
+			req.body.object = [object.id];
+		}
+
+		activitypub.helpers.log('[middleware/activitypub] Origin check passed.');
+	}
+
+	// Cross-check key ownership against received actor.
+	// The keyId is the one that passed cryptographic verification (set on
+	// req.apKeyId by the verify middleware) — NOT a re-parse of the raw header.
+	if (!req.apKeyId) {
+		// A signed POST reaching this point without a verified keyId is anomalous.
+		activitypub.helpers.log('[middleware/activitypub] No verified keyId available for cross-check.');
+		return res.sendStatus(403);
+	}
+
+	await activitypub.actors.assert(actor);
+	let compare = await db.getObjectsFields([
+		`userRemote:${actor}:keys`, `categoryRemote:${actor}:keys`,
+	], ['id']);
+	compare = compare.reduce((keyId, { id }) => keyId || id || '', '').replace(/#[\w-]+$/, '');
+
+	const keyId = req.apKeyId.replace(/#[\w-]+$/, '');
+	if (compare !== keyId) {
+		activitypub.helpers.log('[middleware/activitypub] Key ownership cross-check failed.');
+		return res.sendStatus(403);
+	}
+	activitypub.helpers.log('[middleware/activitypub] Key ownership cross-check passed.');
+
+	next();
+});
+
+middleware.resolveObjects = async function (req, res, next) {
+	const { type, object } = req.body;
+	if (type !== 'Delete' && (typeof object === 'string' || (Array.isArray(object) && object.every(o => typeof o === 'string')))) {
+		activitypub.helpers.log('[middleware/activitypub] Resolving object(s)...');
+		try {
+			req.body.object = await activitypub.helpers.resolveObjects(object);
+			activitypub.helpers.log('[middleware/activitypub] Object(s) successfully resolved.');
+		} catch (e) {
+			activitypub.helpers.log('[middleware/activitypub] Failed to resolve object(s).');
+			return res.sendStatus(424);
+		}
+	}
+
+	next();
+};
+
+// todo: deprecate... this should be handled in actor and note assertion methods instead, or perhaps via helper fn
+middleware.normalize = async function (req, res, next) {
+	// Normalizes the received data structure
+	const { body } = req;
+	const { object } = body;
+
+	// Ensure `to` and `cc` are arrays in the object
+	['to', 'cc'].forEach((prop) => {
+		if (object[prop] && typeof object[prop] === 'string') {
+			object[prop] = [object[prop]];
+		}
+	});
+
+	next();
+};
+
+middleware.configureResponse = async function (req, res, next) {
+	res.header('Content-Type', 'application/activity+json');
+	next();
+};
+
+middleware.canViewUsers = helpers.try(async function (req, res, next) {
+	// For S2S ActivityPub requests, check view:users privilege.
+	// This mirrors the check in WebFinger (well-known.js profile()) which uses uid -2.
+	const callerUid = req.uid || activitypub._constants.uid;
+	const canView = await privileges.global.can('view:users', callerUid);
+	if (!canView) {
+		return res.sendStatus(404);
+	}
+	next();
+});

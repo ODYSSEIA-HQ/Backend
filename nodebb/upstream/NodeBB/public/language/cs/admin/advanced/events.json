@@ -1,0 +1,17 @@
+{
+	"events": "Události",
+	"no-events": "Žádné nové události",
+	"control-panel": "Ovládací panel událostí",
+	"delete-events": "Odstranit události",
+	"confirm-delete-all-events": "Opravdu chcete smazat všechny zaznamenané události?",
+	"filters": "Filtry",
+	"filters-apply": "Použít filtry",
+	"filter-type": "Typ události",
+	"filter-start": "Datum začátku",
+	"filter-end": "Datum konce",
+	"filter-user": "Filtrovat podle uživatele",
+	"filter-user.placeholder": "Zadejte uživatelské jméno pro filtrování…",
+	"filter-group": "Filtrovat podle skupiny",
+	"filter-group.placeholder": "Zadejte název skupiny pro filtrování...",
+	"filter-per-page": "Na stránku"
+}

@@ -42,6 +42,8 @@ odysseia/
 ├── caddy/Caddyfile           # 路由表；/bff/centrifugo/* 故意不出公网（防越权 oracle）
 ├── centrifugo/config.json    # 四 namespace + subscribe proxy（static_headers 注共享密钥）
 ├── nodebb/Dockerfile         # 官方 NodeBB 4 + 两个自研插件
+├── nodebb/upstream/NodeBB/   # NodeBB 本体源码（vendor 基线：上游 v4.16.2 @ 18f2a2ee）
+│                             # 独立项目：改核心直接在此改（注意与构建镜像 ghcr.io/nodebb/nodebb:4.x 的差异同步）
 ├── bff/                     # Rust 版 BFF（axum）：契约与旧 Node 版逐字节对齐
 │   ├── Cargo.toml           # 依赖：axum/tokio/reqwest/jsonwebtoken/hmac+sha2（无 AWS SDK）
 │   ├── src/main.rs          # 五端点：/token、/centrifugo/subscribe、/upload/presign、/chat/:roomId/messages、/vendor/centrifuge.js
@@ -56,7 +58,7 @@ odysseia/
 │   │   ├── library.js        #   14 个 hook 接线；消息负载构造（见「消息契约」）
 │   │   ├── lib/centrifugo.js #   publish 客户端（AbortSignal 3s，失败不阻塞发帖）
 │   │   ├── lib/search.js     #   Meili 索引同步（indexPost/deletePost 幂等）
-│   │   ├── lib/internal.js   #   can-read / can-chat / chat-index 内部 API（X-Internal-Token）
+│   │   ├── lib/internal.js   #   can-read / can-chat / chat-index / chat-messages 内部 API（X-Internal-Token）
 │   │   ├── lib/decor.js      #   装饰引擎：纯库零 hook（消毒/批量成员判定/组快照缓存），可独立单测
 │   │   ├── static/lib/       #   chat.js（WS 连接管理）+ decor.js/css（三端渲染器）
 │   │   └── acpTemplates/     #   ACP 装饰规则配置面

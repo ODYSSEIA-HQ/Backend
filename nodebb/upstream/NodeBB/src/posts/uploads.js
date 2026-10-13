@@ -1,0 +1,271 @@
+'use strict';
+
+const nconf = require('nconf');
+const fs = require('fs').promises;
+const crypto = require('crypto');
+const path = require('path');
+const winston = require('winston');
+const mime = require('mime').default;
+const validator = require('validator');
+const chalk = require('chalk').default;
+
+const db = require('../database');
+const image = require('../image');
+const user = require('../user');
+const topics = require('../topics');
+const file = require('../file');
+const meta = require('../meta');
+const cron = require('../cron');
+
+module.exports = function (Posts) {
+	Posts.uploads = {};
+
+	const md5 = filename => crypto.createHash('md5').update(filename).digest('hex');
+	const upload_path = nconf.get('upload_path');
+	const searchRegex = /\/assets\/uploads(\/files\/[^\s")@?]+\.?[\w]*)/g;
+
+	const _getFullPath = relativePath => path.join(upload_path, relativePath);
+	const _filterValidPaths = async function (filePaths) {
+		return (await Promise.all(filePaths.map(async (filePath) => {
+			const fullPath = _getFullPath(filePath);
+			const valid = file.isPathInside(upload_path, fullPath) && await file.exists(fullPath);
+			return valid ? filePath : false;
+		}))).filter(Boolean);
+	};
+
+	Posts.uploads.startJobs = async function () {
+		const runJobs = nconf.get('runJobs');
+		if (!runJobs) {
+			return;
+		}
+
+		await cron.addJob({
+			name: 'posts:uploads:cleanupOrphans',
+			cronTime: '0 2 * * 0',
+			onTick: async () => {
+				const orphans = await Posts.uploads.cleanOrphans();
+				if (orphans.length) {
+					winston.info(`[posts/uploads] Deleting ${orphans.length} orphaned uploads...`);
+					orphans.forEach((relPath) => {
+						process.stdout.write(`${chalk.red('  - ')} ${relPath}`);
+					});
+				}
+			},
+		});
+	};
+
+	Posts.uploads.sync = async function (pid) {
+		const [postData, isMainPost] = await Promise.all([
+			Posts.getPostFields(pid, ['tid', 'content', 'uploads']),
+			Posts.isMain(pid),
+		]);
+
+		const currentUploads = postData.uploads || [];
+		const uploads = await Posts.uploads.getUploadsForPost(postData, isMainPost);
+
+		const add = uploads.filter(path => !currentUploads.includes(path));
+		const remove = currentUploads.filter(path => !uploads.includes(path));
+		await Posts.uploads.associate(pid, add);
+		await Posts.uploads.dissociate(pid, remove);
+	};
+
+	Posts.uploads.saveUploadsToPid = async function (uploads, pid) {
+		const now = Date.now();
+		await db.sortedSetAddBulk(uploads.map(path => [`upload:${md5(path)}:pids`, now, pid]));
+	};
+
+	Posts.uploads.getUploadsForPost = async function ({ tid, content }, isMainPost) {
+		const uploadsSet = getUploadsFromPostContent(content || '');
+		if (isMainPost) {
+			let thumbs = await topics.thumbs.get(tid, { thumbsOnly: true });
+			thumbs = thumbs.map(thumb => thumb.path).filter(path => !validator.isURL(path, {
+				require_protocol: true,
+			}));
+			thumbs.forEach(t => uploadsSet.add(t));
+		}
+		return await _filterValidPaths(Array.from(uploadsSet));
+	};
+
+	function getUploadsFromPostContent(content) {
+		let match = searchRegex.exec(content);
+		const uploads = new Set();
+		while (match) {
+			// Normalize so stored/hashed keys match the canonical path; reject any
+			// path that escapes the uploads root (e.g. traversal via `..` segments)
+			const relPath = path.posix.normalize(match[1].replace('-resized', ''));
+			if (relPath.startsWith('/files/')) {
+				uploads.add(relPath);
+			}
+			match = searchRegex.exec(content);
+		}
+		return uploads;
+	}
+
+	Posts.uploads.list = async function (pids) {
+		const isArray = Array.isArray(pids);
+		if (isArray) {
+			const uploads = await Posts.getPostsFields(pids, ['uploads']);
+			return uploads.map(p => p.uploads || []);
+		}
+
+		const uploads = await Posts.getPostField(pids, 'uploads');
+		return uploads;
+	};
+
+	Posts.uploads.listWithSizes = async function (pid) {
+		const paths = await Posts.uploads.list(pid);
+		const sizes = await db.getObjects(paths.map(path => `upload:${md5(path)}`)) || [];
+
+		return sizes.map((sizeObj, idx) => ({
+			...sizeObj,
+			name: paths[idx],
+		}));
+	};
+
+	Posts.uploads.getOrphans = async () => {
+		let files = await fs.readdir(_getFullPath('/files'));
+		files = files.filter(filename => filename !== '.gitignore');
+
+		// Exclude non-timestamped files (e.g. group covers; see gh#10783/gh#10705)
+		const tsPrefix = /^\d{13}-/;
+		files = files.filter(filename => tsPrefix.test(filename));
+
+		files = await Promise.all(files.map(
+			async filename => (await Posts.uploads.isOrphan(`/files/${filename}`) ? `/files/${filename}` : null)
+		));
+		files = files.filter(Boolean);
+
+		return files;
+	};
+
+	Posts.uploads.cleanOrphans = async () => {
+		const now = Date.now();
+		const expiration = now - (1000 * 60 * 60 * 24 * meta.config.orphanExpiryDays);
+		const days = meta.config.orphanExpiryDays;
+		if (!days) {
+			return [];
+		}
+
+		let orphans = await Posts.uploads.getOrphans();
+
+		orphans = await Promise.all(orphans.map(async (relPath) => {
+			const { mtimeMs } = await fs.stat(_getFullPath(relPath));
+			return mtimeMs < expiration ? relPath : null;
+		}));
+		orphans = orphans.filter(Boolean);
+
+		await Promise.all(orphans.map(async (relPath) => {
+			await file.delete(_getFullPath(relPath));
+		}));
+
+		return orphans;
+	};
+
+	Posts.uploads.isOrphan = async function (filePath) {
+		const length = await db.sortedSetCard(`upload:${md5(filePath)}:pids`);
+		return length === 0;
+	};
+
+	Posts.uploads.getUsage = async function (filePaths) {
+		// Given an array of file names, determines which pids they are used in
+		if (!Array.isArray(filePaths)) {
+			filePaths = [filePaths];
+		}
+
+		// windows path => 'files\\1685368788211-1-profileimg.jpg'
+		// linux path => files/1685368788211-1-profileimg.jpg
+		// turn them into => '/files/1685368788211-1-profileimg.jpg'
+		filePaths.forEach((file) => {
+			file.path = `/${file.path.split(path.sep).join(path.posix.sep)}`;
+		});
+
+		const keys = filePaths.map(fileObj => `upload:${md5(fileObj.path.replace('-resized', ''))}:pids`);
+		return await Promise.all(keys.map(k => db.getSortedSetRange(k, 0, -1)));
+	};
+
+	Posts.uploads.associate = async function (pid, filePaths) {
+		filePaths = !Array.isArray(filePaths) ? [filePaths] : filePaths;
+		if (!filePaths.length) {
+			return;
+		}
+		filePaths = await _filterValidPaths(filePaths); // Only process files that exist and are within uploads directory
+		const currentUploads = await Posts.uploads.list(pid);
+		filePaths.forEach((path) => {
+			if (!currentUploads.includes(path)) {
+				currentUploads.push(path);
+			}
+		});
+
+		await Promise.all([
+			db.setObjectField(`post:${pid}`, 'uploads', JSON.stringify(currentUploads)),
+			Posts.uploads.saveUploadsToPid(filePaths, pid),
+			Posts.uploads.saveSize(filePaths),
+		]);
+	};
+
+	Posts.uploads.dissociate = async function (pid, filePaths) {
+		filePaths = !Array.isArray(filePaths) ? [filePaths] : filePaths;
+		if (!filePaths.length) {
+			return;
+		}
+		// Normalize so md5 keys and orphan checks use the canonical path
+		filePaths = filePaths.map(p => path.posix.normalize(p));
+		let currentUploads = (await Posts.uploads.list(pid)).map(p => path.posix.normalize(p));
+		currentUploads = currentUploads.filter(upload => !filePaths.includes(upload));
+		const bulkRemove = filePaths.map(path => [`upload:${md5(path)}:pids`, pid]);
+		const promises = [
+			db.setObjectField(`post:${pid}`, 'uploads', JSON.stringify(currentUploads)),
+			db.sortedSetRemoveBulk(bulkRemove),
+		];
+
+		await Promise.all(promises);
+
+		if (!meta.config.preserveOrphanedUploads) {
+			const deletePaths = (await Promise.all(
+				filePaths.map(async filePath => (await Posts.uploads.isOrphan(filePath) ? filePath : false))
+			)).filter(Boolean);
+
+			const uploaderUids = (await db.getObjectsFields(
+				deletePaths.map(path => `upload:${md5(path)}`, ['uid'])
+			)).map(o => (o ? o.uid || null : null));
+			await Promise.all(uploaderUids.map((uid, idx) => (
+				uid && isFinite(uid) ? user.deleteUpload(uid, uid, deletePaths[idx]) : null
+			)).filter(Boolean));
+			await Posts.uploads.deleteFromDisk(deletePaths);
+		}
+	};
+
+	Posts.uploads.dissociateAll = async (pid) => {
+		const current = await Posts.uploads.list(pid);
+		await Posts.uploads.dissociate(pid, current);
+	};
+
+	Posts.uploads.deleteFromDisk = async (filePaths) => {
+		if (typeof filePaths === 'string') {
+			filePaths = [filePaths];
+		} else if (!Array.isArray(filePaths)) {
+			throw new Error(`[[error:wrong-parameter-type, filePaths, ${typeof filePaths}, array]]`);
+		}
+
+		filePaths = (await _filterValidPaths(filePaths)).map(_getFullPath);
+		await Promise.all(filePaths.map(file.delete));
+	};
+
+	Posts.uploads.saveSize = async (filePaths) => {
+		filePaths = filePaths.filter((fileName) => {
+			const type = mime.getType(fileName);
+			return type && type.match(/image./);
+		});
+		await Promise.all(filePaths.map(async (fileName) => {
+			try {
+				const size = await image.size(_getFullPath(fileName));
+				await db.setObject(`upload:${md5(fileName)}`, {
+					width: size.width,
+					height: size.height,
+				});
+			} catch (err) {
+				winston.error(`[posts/uploads] Error while saving post upload sizes (${fileName}): ${err.message}`);
+			}
+		}));
+	};
+};

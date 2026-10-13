@@ -1,0 +1,28 @@
+{
+	"alert.confirm-rebuild-and-restart": "Наистина ли искате да изградите повторно и да рестартирате NodeBB?",
+	"alert.confirm-restart": "Наистина ли искате да рестартирате NodeBB?",
+	"rebuilding.title": "Прекомпилиране… <i class=\"fa fa-spin fa-refresh\"></i>",
+	"rebuilding.message": "NodeBB прекомпилира клиентските ресурси (css, javascript и т.н.).",
+	"rebuildrestart.success.title": "<i class=\"fa fa-check\"></i> Успешно",
+	"rebuilding.success.message": "NodeBB прекомпилира и се рестартира успешно",
+	"build.complete": "Компилирането е завършено!… <i class=\"fa fa-spin fa-refresh\"></i>",
+
+	"restarting.title": "Рестартиране… <i class=\"fa fa-spin fa-refresh\"></i>",
+	"restarting.message": "NodeBB се рестартира.",
+	"restarting.success.message": "NodeBB се рестартира успешно.",
+
+
+	"acp-title": "%1 | Контролен панел за администратори на NodeBB",
+	"settings-header-contents": "Съдържание",
+	"changes-saved": "Промените са запазени",
+	"changes-saved-message": "Промените Ви в настройките на NodeBB  бяха запазени.",
+	"changes-not-saved": "Промените не са запазени",
+	"changes-not-saved-message": "Възникна проблем при запазването на промените Ви по NodeBB. (%1)",
+	"save-changes": "Запазване на промените",
+	"min": "Мин.:",
+	"max": "Макс.:",
+	"view": "Преглед",
+	"edit": "Редактиране",
+	"add": "Добавяне",
+	"select-icon": "Изберете иконка"
+}

@@ -1,0 +1,234 @@
+
+'use strict';
+
+const _ = require('lodash');
+
+const meta = require('../meta');
+const plugins = require('../plugins');
+const db = require('../database');
+const groups = require('../groups');
+const activitypub = require('../activitypub');
+const utils = require('../utils');
+
+module.exports = function (User) {
+	const validSorts = new Set(['joindate', 'lastonline', 'postcount', 'reputation', 'flags']);
+
+	const filterFnMap = {
+		online: user => user.status !== 'offline' && (Date.now() - user.lastonline < 300000),
+		flagged: user => parseInt(user.flags, 10) > 0,
+		verified: user => !!user['email:confirmed'],
+		unverified: user => !user['email:confirmed'],
+	};
+
+	const filterFieldMap = {
+		online: ['status', 'lastonline'],
+		flagged: ['flags'],
+		verified: ['email:confirmed'],
+		unverified: ['email:confirmed'],
+	};
+
+
+	User.search = async function (data) {
+		const query = data.query || '';
+		const searchBy = data.searchBy || 'username';
+		const page = data.page || 1;
+		const uid = data.uid || 0;
+		const paginate = data.hasOwnProperty('paginate') ? data.paginate : true;
+
+		const startTime = process.hrtime();
+
+		let uids = [];
+		if (searchBy === 'ip') {
+			uids = await searchByIP(query);
+		} else if (searchBy === 'uid') {
+			uids = [query];
+		} else {
+			if (!data.findUids && data.uid) {
+				const handle = activitypub.helpers.isWebfinger(data.query);
+				if (handle || activitypub.helpers.isUri(data.query)) {
+					const local = await activitypub.helpers.resolveLocalId(data.query);
+					if (local.type === 'user' && utils.isNumber(local.id)) {
+						uids = [local.id];
+					} else {
+						const assertion = await activitypub.actors.assert([handle || data.query]);
+						if (assertion === true) {
+							const resolved = handle ? await db.getObjectField('handle:uid', handle.toLowerCase()) : null;
+							if (resolved) {
+								uids = [resolved];
+							} else {
+								const wfKey = handle ? activitypub.helpers._webfingerKey(handle) : false;
+								const cached = wfKey ? activitypub.helpers._webfingerCache.get(wfKey) : null;
+								uids = cached ? [cached.actorUri] : [handle ? await User.getUidByUserslug(handle) : query];
+							}
+						} else if (Array.isArray(assertion) && assertion.length) {
+							uids = assertion.map(u => u.id);
+						}
+					}
+				}
+			}
+
+			// For partial queries, search both local and remote users in parallel
+			if (!uids.length) {
+				const searchMethod = data.findUids || findUids;
+				const promises = [
+					searchMethod(query, searchBy, data.hardCap),
+				];
+
+				const mapping = {
+					username: 'ap.preferredUsername',
+					fullname: 'ap.name',
+				};
+				if (meta.config.activitypubEnabled && Object.hasOwn(mapping, searchBy)) {
+					promises.push(searchMethod(query, mapping[searchBy], data.hardCap));
+				}
+				uids = (await Promise.all(promises)).flat();
+			}
+		}
+
+		// Allow plugins to short-circuit with their own results
+		const hookResult = await plugins.hooks.fire('filter:users.searchOverride', {
+			query, searchBy, uids, uid, hardCap: data.hardCap,
+		});
+		uids = hookResult.uids;
+
+		uids = await filterAndSortUids(uids, data);
+		if (data.hardCap > 0) {
+			uids.length = data.hardCap;
+		}
+
+		const result = await plugins.hooks.fire('filter:users.search', { uids, uid });
+		uids = result.uids;
+
+		const searchResult = {
+			matchCount: uids.length,
+		};
+
+		if (paginate) {
+			const resultsPerPage = data.resultsPerPage || meta.config.userSearchResultsPerPage;
+			const start = Math.max(0, page - 1) * resultsPerPage;
+			const stop = start + resultsPerPage;
+			searchResult.pageCount = Math.ceil(uids.length / resultsPerPage);
+			uids = uids.slice(start, stop);
+		}
+
+		const [userData, blocks] = await Promise.all([
+			User.getUsers(uids, uid),
+			User.blocks.list(uid),
+		]);
+
+		if (blocks.length) {
+			userData.forEach((user) => {
+				if (user) {
+					user.isBlocked = blocks.includes(String(user.uid));
+				}
+			});
+		}
+
+		searchResult.timing = (process.elapsedTimeSince(startTime) / 1000).toFixed(2);
+		searchResult.users = userData.filter(
+			user => user && (utils.isNumber(user.uid) ? user.uid > 0 : activitypub.helpers.isUri(user.uid))
+		);
+		return searchResult;
+	};
+
+	async function findUids(query, searchBy, hardCap) {
+		if (!query) {
+			return [];
+		}
+		query = String(query).toLowerCase();
+		const min = query;
+		const max = query.substr(0, query.length - 1) + String.fromCharCode(query.charCodeAt(query.length - 1) + 1);
+
+		hardCap = hardCap || 500;
+
+		const data = await db.getSortedSetRangeByLex(`${searchBy}:sorted`, min, max, 0, hardCap);
+		const uids = data.map((data) => {
+			if (data.includes(':https:')) {
+				return data.substring(data.indexOf(':https:') + 1);
+			}
+
+			return data.split(':').pop();
+		});
+		return uids;
+	}
+
+	async function filterAndSortUids(uids, data) {
+		uids = uids.filter(uid => parseInt(uid, 10) || activitypub.helpers.isUri(uid));
+		let filters = data.filters || [];
+		filters = Array.isArray(filters) ? filters : [data.filters];
+		const fields = [];
+		const sortBy = validSorts.has(data.sortBy) ? data.sortBy : null;
+		if (sortBy) {
+			fields.push(sortBy);
+		}
+
+		filters.forEach((filter) => {
+			if (filterFieldMap[filter]) {
+				fields.push(...filterFieldMap[filter]);
+			}
+		});
+
+		if (data.groupName) {
+			const isMembers = await groups.isMembers(uids, data.groupName);
+			uids = uids.filter((uid, index) => isMembers[index]);
+		}
+
+		if (!fields.length) {
+			return uids;
+		}
+
+		if (filters.includes('banned') || filters.includes('notbanned')) {
+			const isMembersOfBanned = await groups.isMembers(uids, groups.BANNED_USERS);
+			const checkBanned = filters.includes('banned');
+			uids = uids.filter((uid, index) => (checkBanned ? isMembersOfBanned[index] : !isMembersOfBanned[index]));
+		}
+
+		if (filters.includes('muted')) {
+			const isMembersOfMuted = await db.isSortedSetMembers('users:muted', uids);
+			uids = uids.filter((uid, index) => isMembersOfMuted[index]);
+		}
+
+		fields.push('uid');
+		let userData = await User.getUsersFields(uids, fields);
+
+		filters.forEach((filter) => {
+			if (filterFnMap[filter]) {
+				userData = userData.filter(filterFnMap[filter]);
+			}
+		});
+
+		if (sortBy) {
+			sortUsers(userData, sortBy, data.sortDirection);
+		}
+
+		return userData.map(user => user.uid);
+	}
+
+	function sortUsers(userData, sortBy, sortDirection) {
+		if (!userData || !userData.length) {
+			return;
+		}
+		sortDirection = sortDirection || 'desc';
+		const direction = sortDirection === 'desc' ? 1 : -1;
+
+		const isNumeric = utils.isNumber(userData[0][sortBy]);
+		if (isNumeric) {
+			userData.sort((u1, u2) => direction * (u2[sortBy] - u1[sortBy]));
+		} else {
+			userData.sort((u1, u2) => {
+				if (u1[sortBy] < u2[sortBy]) {
+					return direction * -1;
+				} else if (u1[sortBy] > u2[sortBy]) {
+					return direction * 1;
+				}
+				return 0;
+			});
+		}
+	}
+
+	async function searchByIP(ip) {
+		const ipKeys = await db.scan({ match: `ip:${ip}*` });
+		const uids = await db.getSortedSetRevRange(ipKeys, 0, -1);
+		return _.uniq(uids);
+	}
+};

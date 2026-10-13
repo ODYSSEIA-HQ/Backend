@@ -1,0 +1,28 @@
+{
+	"alert.confirm-rebuild-and-restart": "Bạn có chắc muốn dựng lại và khởi động lại NodeBB?",
+	"alert.confirm-restart": "Bạn có chắc muốn khởi động lại NodeBB",
+	"rebuilding.title": "Đang xây dựng lại... <i class=\"fa fa-spin fa-refresh\"></i>",
+	"rebuilding.message": "NodeBB đang xây dựng lại các thành phần giao diện người dùng (CSS, JavaScript, v.v.).",
+	"rebuildrestart.success.title": "<i class=\"fa fa-check\"></i> Thành công",
+	"rebuilding.success.message": "NodeBB đã được xây dựng lại và khởi động lại thành công.",
+	"build.complete": "Xây Dựng Hoàn Tất!... <i class=\"fa fa-spin fa-refresh\"></i>",
+
+	"restarting.title": "Đang khởi động lại... <i class=\"fa fa-spin fa-refresh\"></i>",
+	"restarting.message": "NodeBB đang khởi động lại.",
+	"restarting.success.message": "NodeBB đã khởi động lại thành công.",
+
+
+	"acp-title": "%1 | Bảng Điểu Khiển Quản Trị NodeBB",
+	"settings-header-contents": "Nội dung",
+	"changes-saved": "Đã Lưu Thay Đổi",
+	"changes-saved-message": "Những thay đổi của bạn đối với cấu hình NodeBB đã được lưu.",
+	"changes-not-saved": "Thay Đổi Chưa Được Lưu",
+	"changes-not-saved-message": "NodeBB đã gặp sự cố khi lưu các thay đổi của bạn. (%1)",
+	"save-changes": "Lưu thay đổi",
+	"min": "Tối thiểu:",
+	"max": "Tối đa:",
+	"view": "Xem",
+	"edit": "Sửa",
+	"add": "Thêm",
+	"select-icon": "Chọn Biểu Tượng"
+}

@@ -1,0 +1,28 @@
+{
+	"alert.confirm-rebuild-and-restart": "Bist du sicher, dass du NodeBB neu bauen und neu starten möchtest?",
+	"alert.confirm-restart": "Bist du sicher, dass du NodeBB neu starten möchtest?",
+	"rebuilding.title": "Wird neu geladen... <i class=\"fa fa-spin fa-refresh\"></i>",
+	"rebuilding.message": "NodeBB generiert gerade die Frontend-Dateien (CSS, JavaScript usw.) neu.",
+	"rebuildrestart.success.title": "<i class=\"fa fa-check\"></i> Erfolg",
+	"rebuilding.success.message": "NodeBB wurde neu gestartet und läuft wieder einwandfrei.",
+	"build.complete": "Fertiggestellt!... <i class=\"fa fa-spin fa-refresh\"></i>",
+
+	"restarting.title": "Neustart... <i class=\"fa fa-spin fa-refresh\"></i>",
+	"restarting.message": "NodeBB wird neu gestartet.",
+	"restarting.success.message": "NodeBB wurde erfolgreich neu gestartet.",
+
+
+	"acp-title": "%1 | NodeBB Admin Systemsteuerung",
+	"settings-header-contents": "Inhalte",
+	"changes-saved": "Änderungen gespeichert",
+	"changes-saved-message": "Deine Änderungen an der NodeBB Konfiguration wurden gespeichert.",
+	"changes-not-saved": "Änderungen verworfen",
+	"changes-not-saved-message": "Beim Speichern der Änderungen ist ein Problem aufgetreten. (%1)",
+	"save-changes": "Änderungen speichern",
+	"min": "Min:",
+	"max": "Max:",
+	"view": "Anzeigen",
+	"edit": "Bearbeiten",
+	"add": "Hinzufügen",
+	"select-icon": "Icon auswählen"
+}

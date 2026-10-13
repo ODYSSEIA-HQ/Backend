@@ -1,0 +1,94 @@
+'use strict';
+
+
+define('forum/account/info', ['forum/account/header', 'alerts', 'forum/account/sessions'], function (header, alerts, sessions) {
+	const Info = {};
+
+	Info.init = function () {
+		header.init();
+		handleModerationNote();
+		sessions.prepareSessionRevocation();
+	};
+
+	function handleModerationNote() {
+		const noteList = $('[component="account/moderation-note/list"]');
+
+		function adjustTextareaHeight(textarea) {
+			textarea.css({
+				height: textarea.prop('scrollHeight') + 'px',
+			});
+		}
+
+		$('[component="account/save-moderation-note"]').on('click', function () {
+			const noteEl = $('[component="account/moderation-note"]');
+			const note = noteEl.val();
+			socket.emit('user.setModerationNote', {
+				uid: ajaxify.data.uid,
+				note: note,
+			}, function (err, notes) {
+				if (err) {
+					return alerts.error(err);
+				}
+				noteEl.val('');
+
+				app.parseAndTranslate('account/info', 'moderationNotes', { moderationNotes: notes }, function (html) {
+					noteList.prepend(html);
+					html.find('.timeago').timeago();
+				});
+			});
+		});
+
+		noteList.on('click', '[component="account/moderation-note/delete"]', async function () {
+			const parent = $(this).parents('[data-id]');
+			socket.emit('user.deleteModerationNote', {
+				uid: ajaxify.data.uid,
+				id: parent.attr('data-id'),
+			}).then(() => {
+				parent.remove();
+			}).catch(alerts.error);
+		});
+
+		noteList.on('click', '[component="account/moderation-note/edit"]', function () {
+			const parent = $(this).parents('[data-id]');
+			const contentArea = parent.find('[component="account/moderation-note/content-area"]');
+			const editArea = parent.find('[component="account/moderation-note/edit-area"]');
+			contentArea.addClass('hidden');
+			editArea.removeClass('hidden');
+			adjustTextareaHeight(editArea.find('textarea'));
+			editArea.find('textarea').trigger('focus').putCursorAtEnd();
+		});
+
+		noteList.on('click', '[component="account/moderation-note/save-edit"]', function () {
+			const parent = $(this).parents('[data-id]');
+			const contentArea = parent.find('[component="account/moderation-note/content-area"]');
+			const editArea = parent.find('[component="account/moderation-note/edit-area"]');
+			contentArea.removeClass('hidden');
+			const textarea = editArea.find('textarea');
+
+			socket.emit('user.editModerationNote', {
+				uid: ajaxify.data.uid,
+				id: parent.attr('data-id'),
+				note: textarea.val(),
+			}, function (err, notes) {
+				if (err) {
+					return alerts.error(err);
+				}
+				textarea.css({
+					height: textarea.prop('scrollHeight') + 'px',
+				});
+				editArea.addClass('hidden');
+				contentArea.find('.content').html(notes[0].note);
+			});
+		});
+
+		noteList.on('click', '[component="account/moderation-note/cancel-edit"]', function () {
+			const parent = $(this).parents('[data-id]');
+			const contentArea = parent.find('[component="account/moderation-note/content-area"]');
+			const editArea = parent.find('[component="account/moderation-note/edit-area"]');
+			contentArea.removeClass('hidden');
+			editArea.addClass('hidden');
+		});
+	}
+
+	return Info;
+});

@@ -1,0 +1,29 @@
+{
+	"name": "Verda",
+	"latest": "Siste",
+	"latest-local": "Siste (lokal)",
+	"latest-all": "Siste (alle)",
+	"popular-day": "Populært (dag)",
+	"popular-week": "Populært (veke)",
+	"popular-month": "Populært (månad)",
+	"popular-year": "Populært (år)",
+	"popular-alltime": "Populært (heile perioden)",
+	"recent": "Alle",
+	"help": "Hjelp",
+
+	"help.title": "Kva er denne sida?",
+	"help.intro": "Velkommen til ditt hjørne av fødiverset.",
+	"help.fediverse": "“Fødiverset” er eit nettverk av samanbundne applikasjonar og nettsider som kommuniserer med kvarandre, og der brukarane kan sjå kvarandre. Dette forumet er føderert og kan samhandle med det sosiale nettet (eller “fødiverset”). Denne sida er ditt hjørne av fødiverset. Ho består utelukkande av emne oppretta av – og delt frå – brukarar <strong>du</strong> følger.",
+	"help.build": "Det kan vere at det ikkje er mange emne her til å begynne med; det er heilt normalt. Du vil sjå meir innhald her etter kvart som du begynner å følge andre brukarar.",
+	"help.federating": "På same måte, dersom brukarar frå utsida av dette forumet begynner å følge <em>deg</em>, vil innlegga dine òg begynne å visast på desse appane og nettsidene.",
+	"help.next-generation": "Dette er den neste generasjonen av sosiale medium, begynn å bidra i dag!",
+
+	"onboard.title": "Ei verd av innhald rett framfor deg&hellip;",
+	"onboard.what": "Tenk på dette som ein global oppdagingsstraum. Han samlar interessante diskusjonar frå heile nettet og andre fellesskap på éin stad.",
+	"onboard.why": "Du kan utforske det som er populært akkurat no, men denne straumen fungerer best når du gjer han til din eigen. Ved å opprette ein konto kan du følge bestemte skaparar og tema, filtrere bort støyen og berre sjå det som er relevant for deg.",
+	"onboard.how": "Klar for å kome i gang? Opprett ein konto for å begynne å følge andre, få varsel når nokon svarar deg, og lagre favorittane dine.",
+
+	"category-search": "Finn kategori",
+	"see-more": "Sjå meir",
+	"see-less": "Sjå mindre"
+}

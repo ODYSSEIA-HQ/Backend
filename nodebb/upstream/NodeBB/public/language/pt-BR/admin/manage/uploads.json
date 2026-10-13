@@ -1,0 +1,13 @@
+{
+    "manage-uploads": "Manage Uploads",
+    "upload-file": "Enviar Arquivo",
+    "filename": "Nome do Arquivo",
+    "usage": "Uso do Post",
+    "orphaned": "Orphaned",
+    "size/filecount": "Tamanho / Quantidade de arquivos",
+    "confirm-delete": "Você tem certeza de que deseja deletar este arquivo?",
+    "filecount": "%1 arquivos",
+    "new-folder": "New Folder",
+    "name-new-folder": "Enter a name for new the folder",
+    "unsafe-file-warning": "Warning: Do not upload files that you do not trust. Files with certain extensions will be downloaded as attachments to prevent XSS attacks, but it is still possible for malicious files to cause harm if opened on your computer."
+}

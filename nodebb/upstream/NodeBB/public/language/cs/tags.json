@@ -1,0 +1,18 @@
+{
+    "all-tags": "Všechny štítky",
+    "no-tag-topics": "Není zde žádné téma s tímto označením.",
+    "no-tags-found": "Nenalezeny žádné štítky",
+    "tags": "Štítky",
+    "enter-tags-here": "Zadejte štítky, %1 - %2 znaků.",
+    "enter-tags-here-short": "Zadejte štítky…",
+    "no-tags": "Zatím tu není žádné označení.",
+    "select-tags": "Vybrat štítky",
+    "tag-whitelist": "Whitelist štítek",
+    "watching": "Sleduji",
+    "not-watching": "Nesleduji",
+    "watching.description": "Upozorni mě na nová témata",
+    "not-watching.description": "Neupozorňuj mě na nová témata.",
+    "following-tag.message": "Nyní budete dostávat upozornění pokud někdo přidá téma s tímto štítkem.",
+    "following-tag.message-no-notifications": "You are now following this tag, but your notification setting is set to none.",
+    "not-following-tag.message": "Nebudete dostávat upozornění pokud někdo přidá téma s tímto štítkem."
+}

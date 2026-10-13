@@ -1,0 +1,11 @@
+{
+	"crawlability-settings": "Réglages de navigation",
+	"robots-txt": "Fichier Robots.txt personnalisé <small>Laissez vide pour utiliser le fichier par défaut</small>",
+	"sitemap-feed-settings": "Réglages du Sitemap & du flux",
+	"disable-rss-feeds": "Désactiver les flux RSS",
+	"disable-sitemap-xml": "Désactiver le fichier sitemap.xml",
+	"sitemap-topics": "Nombre de sujets à afficher dans le sitemap",
+	"sitemap-cache-duration-hours": "Durée du cache du sitemap (heures)",
+	"clear-sitemap-cache": "Effacer le cache du sitemap",
+	"view-sitemap": "Afficher le sitemap"
+}

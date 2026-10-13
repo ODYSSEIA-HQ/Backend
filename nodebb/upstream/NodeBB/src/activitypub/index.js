@@ -1,0 +1,702 @@
+'use strict';
+
+const nconf = require('nconf');
+const winston = require('winston');
+const { createHash } = require('crypto');
+
+const request = require('../request');
+const db = require('../database');
+const SendPool = require('./send');
+const pubsub = require('../pubsub');
+const meta = require('../meta');
+const categories = require('../categories');
+const posts = require('../posts');
+const messaging = require('../messaging');
+const user = require('../user');
+const utils = require('../utils');
+const ttl = require('../cache/ttl');
+const lru = require('../cache/lru');
+const batch = require('../batch');
+const requestCache = ttl({
+	name: 'ap-request-cache',
+	max: 5000,
+	ttl: 1000 * 60 * 5, // 5 minutes
+});
+const serveCache = ttl({
+	name: 'ap-serve-cache',
+	max: 5000,
+	ttl: 1000 * 60, // 1 minute
+});
+const probeCache = ttl({
+	name: 'ap-probe-cache',
+	max: 500,
+	ttl: 1000 * 60 * 60, // 1 hour
+});
+const probeRateLimit = ttl({
+	name: 'ap-probe-rate-limit-cache',
+	ttl: 1000 * 3, // 3 seconds
+});
+const publicKeyFetchRateLimit = ttl({
+	name: 'ap-public-key-fetch-rate-limit-cache',
+	ttl: 60 * 1000, // 60 seconds
+	max: 1000,
+});
+const publicKeyCache = lru({
+	name: 'ap-public-key-cache',
+	ttl: 1000 * 60 * 60 * 6, // 6 hours
+	max: 1000,
+});
+
+const ActivityPub = module.exports;
+
+ActivityPub._constants = Object.freeze({
+	uid: -2,
+	publicAddress: 'https://www.w3.org/ns/activitystreams#Public',
+	acceptablePublicAddresses: ['https://www.w3.org/ns/activitystreams#Public', 'as:Public', 'Public'],
+	acceptableTypes: [
+		'application/activity+json',
+		'application/ld+json;profile="https://www.w3.org/ns/activitystreams"',
+	],
+	acceptedPostTypes: [
+		'Note', 'Page', 'Article', 'Question', 'Video',
+	],
+	acceptableActorTypes: new Set(['Application', 'Organization', 'Person', 'Service']),
+	acceptableGroupTypes: new Set(['Group']),
+	requiredActorProps: ['inbox'],
+	acceptedProtocols: ['https', ...(process.env.CI === 'true' ? ['http'] : [])],
+	acceptable: {
+		customFields: new Set(['PropertyValue', 'Link', 'Note']),
+		contextTypes: new Set(['Collection', 'CollectionPage', 'OrderedCollection', 'OrderedCollectionPage']),
+	},
+});
+ActivityPub._cache = requestCache;
+ActivityPub.serveCache = serveCache;
+ActivityPub._sent = new Map(); // used only in local tests
+
+// Invalidate serve cache on post lifecycle events
+pubsub.on('post:edit', pid => ActivityPub.serveCache.del(`/post/${pid}`));
+pubsub.on('post:delete', pid => ActivityPub.serveCache.del(`/post/${pid}`));
+pubsub.on('post:purge', pid => ActivityPub.serveCache.del(`/post/${pid}`));
+
+
+ActivityPub.helpers = require('./helpers');
+ActivityPub.inbox = require('./inbox');
+ActivityPub.mocks = require('./mocks');
+ActivityPub.notes = require('./notes');
+ActivityPub.contexts = require('./contexts');
+ActivityPub.actors = require('./actors');
+ActivityPub.instances = require('./instances');
+ActivityPub.blocklists = require('./blocklists');
+ActivityPub.feps = require('./feps');
+ActivityPub.rules = require('./rules');
+ActivityPub.relays = require('./relays');
+ActivityPub.hashtags = require('./hashtags');
+ActivityPub.out = require('./out');
+ActivityPub.jobs = require('./jobs');
+ActivityPub.analytics = require('./analytics');
+ActivityPub.signatures = require('./signatures');
+ActivityPub.emoji = require('./emoji');
+
+ActivityPub.resolveId = async (uid, id) => {
+	try {
+		const query = new URL(id);
+		({ id } = await ActivityPub.get('uid', uid, id));
+		const response = new URL(id);
+
+		if (query.host !== response.host) {
+			winston.warn(`[activitypub/resolveId] id resolution domain mismatch: ${query.href} != ${response.href}`);
+			return null;
+		}
+
+		return id;
+	} catch (e) {
+		return null;
+	}
+};
+
+ActivityPub.resolveInboxes = async (ids) => {
+	const inboxes = new Set();
+
+	if (!meta.config.activitypubAllowLoopback) {
+		ids = ids.filter((id) => {
+			try {
+				const { hostname } = new URL(id);
+				return hostname !== nconf.get('url_parsed').hostname;
+			} catch (err) {
+				winston.error(`[activitypub/resolveInboxes] Invalid id: ${id}`);
+				return false;
+			}
+		});
+	}
+
+	await ActivityPub.actors.assert(ids);
+
+	// Remove non-asserted targets
+	const exists = await db.isSortedSetMembers('usersRemote:lastCrawled', ids);
+	ids = ids.filter((_, idx) => exists[idx]);
+
+	await batch.processArray(ids, async (currentIds) => {
+		const isCategory = await db.exists(currentIds.map(id => `categoryRemote:${id}`));
+		const [cids, uids] = currentIds.reduce(([cids, uids], id, idx) => {
+			const array = isCategory[idx] ? cids : uids;
+			array.push(id);
+			return [cids, uids];
+		}, [[], []]);
+		const categoryData = await categories.getCategoriesFields(cids, ['inbox', 'sharedInbox']);
+		const userData = await user.getUsersFields(uids, ['inbox', 'sharedInbox']);
+		currentIds.forEach((id) => {
+			if (cids.includes(id)) {
+				const data = categoryData[cids.indexOf(id)];
+				inboxes.add(data.sharedInbox || data.inbox);
+			} else if (uids.includes(id)) {
+				const data = userData[uids.indexOf(id)];
+				inboxes.add(data.sharedInbox || data.inbox);
+			}
+		});
+	}, {
+		batch: 500,
+	});
+
+	let inboxArr = Array.from(inboxes);
+
+	// Filter out blocked instances
+	const blocked = [];
+	const allowed = await Promise.all(inboxArr.map(async (inbox) => {
+		let allowed = false;
+		try {
+			const { hostname } = new URL(inbox);
+			({ allowed } = await ActivityPub.instances.isAllowed(hostname));
+			if (!allowed) {
+				blocked.push(inbox);
+			}
+		} catch (e) {
+			winston.warn(`[activitypub/resolveInboxes] Malformed URL encountered while filtering out blocked instances: ${inbox}`);
+		}
+
+		return allowed;
+	}));
+	inboxArr = inboxArr.filter((_, idx) => allowed[idx]);
+	if (blocked.length) {
+		ActivityPub.helpers.log(`[activitypub/resolveInboxes] Not delivering to blocked instances: ${blocked.join(', ')}`);
+	}
+
+	return inboxArr;
+};
+
+ActivityPub.getPublicKey = async (type, id) => {
+	let publicKey;
+
+	try {
+		({ publicKey } = await db.getObject(`${type}:${id}:keys`));
+	} catch (e) {
+		({ publicKey } = await ActivityPub.helpers.generateKeys(type, id));
+	}
+
+	return publicKey;
+};
+
+ActivityPub.getPrivateKey = async (type, id) => {
+	// Sanity checking
+	if (!['cid', 'uid'].includes(type) || !utils.isNumber(id) || parseInt(id, 10) < 0) {
+		throw new Error('[[error:invalid-data]]');
+	}
+	id = parseInt(id, 10);
+	let privateKey;
+
+	try {
+		({ privateKey } = await db.getObject(`${type}:${id}:keys`));
+	} catch (e) {
+		({ privateKey } = await ActivityPub.helpers.generateKeys(type, id));
+	}
+
+	let keyId;
+	if (type === 'uid') {
+		keyId = `${nconf.get('url')}${id > 0 ? `/uid/${id}` : '/actor'}#key`;
+	} else {
+		keyId = `${nconf.get('url')}${id > 0 ? `/category/${id}` : '/actor'}#key`;
+	}
+
+	return { key: privateKey, keyId };
+};
+
+ActivityPub.fetchPublicKey = async (uri, ip) => {
+	const cached = publicKeyCache.get(uri);
+	if (cached !== undefined) {
+		if (cached === null) {
+			// Failed request was cached
+			throw new Error('[[error:activitypub.pubKey-not-found]]');
+		}
+		return cached;
+	}
+
+	// Validate URI format
+	const isValidHttpUri = typeof uri === 'string' &&
+		(
+			uri.startsWith('https://') ||
+			(uri.startsWith('http://') && process.env.CI === 'true')
+		);
+	if (!isValidHttpUri) {
+		throw new Error('[[error:activitypub.invalid-id]]');
+	}
+
+	try {
+		// Validate URI is well-formed
+		new URL(uri);
+	} catch (err) {
+		throw new Error('[[error:activitypub.invalid-id]]');
+	}
+
+	// Check rate limit for this IP (0 = disabled)
+	if (meta.config.activitypubPublicKeyFetchRateLimit > 0) {
+		const lockId = `pubkey:${ip}`;
+		const currentCount = publicKeyFetchRateLimit.get(lockId) || 0;
+		if (currentCount >= meta.config.activitypubPublicKeyFetchRateLimit) {
+			winston.warn(`[activitypub/fetchPublicKey] Rate limit exceeded for IP ${ip}`);
+			throw new Error('[[error:activitypub.rate-limited]]');
+		}
+		publicKeyFetchRateLimit.set(lockId, currentCount + 1, 60 * 1000);
+	}
+
+	try {
+		// Use request.get with built-in SSRF protections
+		// Set reasonable timeout and response size limit
+		const { body } = await request.get(uri, {
+			timeout: 5000, // 5 seconds
+			sizeLimit: 1024 * 1024, // 1MB — public keys are typically <10KB
+			headers: {
+				'accept': ActivityPub._constants.acceptableTypes.at(1),
+			},
+			redirect: 'manual',
+		});
+
+		// Process response and cache
+		if (body.hasOwnProperty('publicKeyPem')) {
+			// Validate public key
+			if (!utils.isPEM(body.publicKeyPem)) {
+				throw new Error('[[error:invalid-data]]');
+			}
+			// CryptographicKey returned (correct)
+			publicKeyCache.set(uri, body.publicKeyPem);
+			return body.publicKeyPem;
+		} else if (body?.publicKey?.publicKeyPem) {
+			// Validate public key
+			if (!utils.isPEM(body.publicKey.publicKeyPem)) {
+				throw new Error('[[error:invalid-data]]');
+			}
+			// Actor object returned (less correct)
+			publicKeyCache.set(uri, body.publicKey.publicKeyPem);
+			return body.publicKey.publicKeyPem;
+		}
+
+		// Response didn't contain expected public key
+		publicKeyCache.set(uri, null);
+		throw new Error('[[error:activitypub.pubKey-not-found]]');
+	} catch (err) {
+		// Cache the failed request
+		publicKeyCache.set(uri, null);
+
+		// Re-throw with context if needed
+		if (err.message.includes('reserved-ip-address')) {
+			throw new Error('[[error:activitypub.invalid-id]]');
+		}
+		throw err;
+	}
+};
+
+ActivityPub.sign = async ({ key, keyId }, url, digest) => {
+	// Determines HTTP method based on digest presence
+	const method = digest ? 'POST' : 'GET';
+	return await ActivityPub.signatures.sign({ key, keyId }, url, method, digest);
+};
+
+ActivityPub.verify = async (req) => {
+	ActivityPub.helpers.log('[activitypub/verify] Starting signature verification...');
+
+	const verified = await ActivityPub.signatures.verify(req, ActivityPub.fetchPublicKey);
+	if (!verified) {
+		ActivityPub.helpers.log('[activitypub/verify] Signature verification failed.');
+	} else {
+		ActivityPub.helpers.log('[activitypub/verify] Signature verification succeeded.');
+	}
+
+	return verified;
+};
+
+async function _checkFederationPolicy(hostname, url) {
+	const { allowed } = await ActivityPub.instances.isAllowed(hostname);
+	if (!allowed) {
+		ActivityPub.helpers.log(`[activitypub/get] Not retrieving ${url}, domain is blocked.`);
+		const e = new Error(`[[error:activitypub.get-failed]]`);
+		e.code = `ap_get_domain_blocked`;
+		throw e;
+	}
+};
+
+ActivityPub.get = async (type, id, uri, options) => {
+	if (!meta.config.activitypubEnabled) {
+		throw new Error('[[error:activitypub.not-enabled]]');
+	}
+
+	const { hostname } = new URL(uri);
+	await _checkFederationPolicy(hostname, uri);
+
+	options = {
+		cache: true,
+		...options,
+	};
+	const cacheKey = [id, uri].join(';');
+	const cached = requestCache.get(cacheKey);
+	if (options.cache && cached !== undefined) {
+		return cached;
+	}
+
+	const keyData = await ActivityPub.getPrivateKey(type, id);
+	const headers = id >= 0 ? await ActivityPub.sign(keyData, uri) : {};
+	ActivityPub.helpers.log(`[activitypub/get] ${uri}`);
+	try {
+		const { response, body, url: resolvedUrl } = await request.get(uri, {
+			headers: {
+				...headers,
+				...options.headers,
+				Accept: 'application/ld+json; profile="https://www.w3.org/ns/activitystreams"',
+			},
+			timeout: 5000,
+		});
+
+		const { hostname: resolvedHostname } = new URL(resolvedUrl);
+		await _checkFederationPolicy(resolvedHostname, resolvedUrl);
+
+		if (!String(response.statusCode).startsWith('2')) {
+			ActivityPub.helpers.log(`[activitypub/get] Received ${response.statusCode} when querying ${uri}`);
+			if (body.hasOwnProperty('error')) {
+				ActivityPub.helpers.log(`[activitypub/get] Error received: ${body.error}`);
+			}
+
+			const e = new Error(`[[error:activitypub.get-failed]]`);
+			e.code = `ap_get_${response.statusCode}`;
+			throw e;
+		}
+
+		if (!body || typeof body !== 'object' || Array.isArray(body)) {
+			ActivityPub.helpers.log(`[activitypub/get] Received non-object response from ${uri}`);
+			const e = new Error(`[[error:activitypub.get-failed]]`);
+			e.code = 'ap_get_invalid_response';
+			throw e;
+		}
+
+		requestCache.set(cacheKey, body);
+		return body;
+	} catch (err) {
+		if (String(err.code).startsWith('ap_get_')) {
+			throw err;
+		}
+
+		// Handle things like non-json body, etc.
+		throw new Error(`[[error:activitypub.get-failed]]`, { cause: err });
+	}
+};
+
+ActivityPub.send = async (type, id, targets, payload, { delayMs = 0 } = {}) => {
+	if (!meta.config.activitypubEnabled) {
+		return ActivityPub.helpers.log('[activitypub/send] Federation not enabled; not sending.');
+	}
+
+	ActivityPub.helpers.log(`[activitypub/send] ${payload.id}`);
+
+	if (!Array.isArray(targets)) {
+		targets = [targets];
+	}
+
+	if (process.env.hasOwnProperty('CI')) {
+		ActivityPub._sent.set(payload.id, { payload, targets });
+		return;
+	}
+
+	const inboxes = await ActivityPub.resolveInboxes(targets);
+
+	const actor = ActivityPub.helpers.resolveActor(type, id);
+
+	payload = {
+		'@context': 'https://www.w3.org/ns/activitystreams',
+		actor,
+		...payload,
+	};
+	const payloadHash = createHash('sha256');
+	payloadHash.update(JSON.stringify(payload));
+	const digest = `SHA-256=${payloadHash.digest('base64')}`;
+
+	// Push all inboxes to the Redis retry queue and dispatch to workers
+	setImmediate(() => {
+		const retryQueueAdd = [];
+		const retryQueuedSet = [];
+		const nextTryOn = Date.now() + (delayMs || 0);
+
+		inboxes.forEach((uri) => {
+			const queueId = createHash('sha256').update(`${type}:${id}:${uri}`).digest('hex');
+			retryQueueAdd.push(['ap:retry:queue', nextTryOn, queueId]);
+			retryQueuedSet.push([`ap:retry:queue:${queueId}`, {
+				queueId,
+				uri,
+				id,
+				type,
+				attempts: 1,
+				timestamp: nextTryOn,
+				digest,
+				payload: JSON.stringify(payload),
+			}]);
+		});
+
+		if (retryQueueAdd.length) {
+			db.sortedSetAddBulk(retryQueueAdd);
+			db.setObjectBulk(retryQueuedSet);
+
+			// Start the drain loop if not already draining
+			if (SendPool.pool > 0) {
+				SendPool.drainLoop();
+			}
+		}
+	});
+};
+
+ActivityPub.buildRecipients = async function (object, options) {
+	/**
+	 * - Builds a list of targets for activitypub.send to consume
+	 * - Extends to and cc since the activity can be addressed more widely
+	 * - Optional parameters:
+	 *     - `cid`: includes followers of the passed-in cid (local only, can also be an array)
+	 *     - `uid`: includes followers of the passed-in uid (local only)
+	 *     - `pid`: includes post announcers and all topic participants
+	 *     - `targets`: boolean; whether to calculate targets (default: true)
+	 */
+
+	let { to, cc } = object;
+	to = new Set(to);
+	cc = new Set(cc);
+
+	let { pid, uid, cid } = options;
+	options.targets = options.targets ?? true;
+
+	let followers = [];
+	if (uid) {
+		({ uids: followers } = await ActivityPub.actors.getFollowers(uid));
+		const followersUrl = `${nconf.get('url')}/uid/${uid}/followers`;
+		if (!to.has(followersUrl)) {
+			cc.add(followersUrl);
+		}
+	}
+
+	if (cid) {
+		cid = Array.isArray(cid) ? cid : [cid];
+		await Promise.all(cid.map(async (cid) => {
+			const cidFollowers = await ActivityPub.notes.getCategoryFollowers(cid);
+			followers = followers.concat(cidFollowers);
+			const followersUrl = `${nconf.get('url')}/category/${cid}/followers`;
+			if (!to.has(followersUrl)) {
+				cc.add(followersUrl);
+			}
+		}));
+	}
+
+	let targets = new Set();
+	if (options.targets) {
+		targets = new Set([...followers, ...to, ...cc]);
+
+		// Remove local uris, public addresses, and any ids that aren't asserted actors
+		targets.forEach((address) => {
+			if (utils.isNumber(address) || address.startsWith(nconf.get('url'))) {
+				targets.delete(address);
+			}
+		});
+		ActivityPub._constants.acceptablePublicAddresses.forEach((address) => {
+			targets.delete(address);
+		});
+		if (targets.size) {
+			const exists = await db.isSortedSetMembers('usersRemote:lastCrawled', [...targets]);
+			Array.from(targets).forEach((uri, idx) => {
+				if (!exists[idx]) {
+					targets.delete(uri);
+				}
+			});
+		}
+	}
+
+	// Topic posters, post announcers and their followers
+	if (pid) {
+		const { tid, mainPid } = await posts.getPostFields(pid, ['tid', 'mainPid']);
+		const participants = (await db.getSortedSetMembers(`tid:${tid}:posters`))
+			.filter(uid => !utils.isNumber(uid)); // remote users only
+		const announcers = (await ActivityPub.notes.announce.list({ pid })).map(({ actor }) => actor);
+		const mainAnnouncers = (await ActivityPub.notes.announce.list({ pid: mainPid })).map(({ actor }) => actor);
+		const auxiliaries = Array.from(new Set([...participants, ...announcers, ...mainAnnouncers]));
+
+		const auxiliaryFollowers = (await user.getUsersFields(auxiliaries, ['followersUrl']))
+			.filter(o => o.hasOwnProperty('followersUrl'))
+			.map(({ followersUrl }) => followersUrl);
+		[...auxiliaries].forEach(uri => uri && targets.add(uri));
+		[...auxiliaries, ...auxiliaryFollowers].forEach(uri => uri && cc.add(uri));
+	}
+
+	return {
+		to: [...to],
+		cc: [...cc],
+		targets,
+	};
+};
+
+ActivityPub.checkHeader = async (url, timeout) => {
+	timeout = timeout || meta.config.activitypubProbeTimeout || 2000;
+
+	try {
+		const { hostname } = new URL(url);
+		const { response } = await request.head(url, {
+			timeout,
+		});
+		const { headers } = response;
+
+		// headers.link =
+		if (headers && headers.link) {
+			// Multiple link headers could be combined
+			const links = headers.link.split(',');
+			let apLink = false;
+
+			links.forEach((link) => {
+				let parts = link.split(';');
+				const url = parts.shift().match(/<(.+)>/)[1];
+				if (!url || apLink) {
+					return;
+				}
+
+				parts = parts
+					.map(p => p.trim())
+					.reduce((memo, cur) => {
+						cur = cur.split('=');
+						if (cur.length < 2) {
+							cur.push('');
+						}
+						memo[cur[0]] = cur[1].slice(1, -1);
+						return memo;
+					}, {});
+
+				if (parts.rel === 'alternate' && parts.type === 'application/activity+json') {
+					apLink = url;
+				}
+			});
+
+			if (apLink) {
+				const { hostname: compare } = new URL(apLink);
+				if (hostname !== compare) {
+					apLink = false;
+				}
+			}
+
+			return apLink;
+		}
+
+		return false;
+	} catch (e) {
+		ActivityPub.helpers.log(`[activitypub/checkHeader] Failed on ${url}: ${e.message}`);
+		return false;
+	}
+};
+
+ActivityPub.probe = async ({ uid, url }) => {
+	/**
+	 * Checks whether a passed-in id or URL is an ActivityPub object and can be mapped to a local representation
+	 *   - `uid` is optional (links to private messages won't match without uid)
+	 *   - Returns a relative path if already available, true if not, and false otherwise.
+	 */
+
+	// Disable on config setting; restrict lookups to HTTPS-enabled URLs only
+	const { activitypubProbe } = meta.config;
+	const { protocol, host } = new URL(url);
+	if (!activitypubProbe || protocol !== 'https:' || host === nconf.get('url_parsed').host) {
+		return false;
+	}
+
+	// Known resources
+	const [isNote, isMessage, isActor, isActorUrl] = await Promise.all([
+		posts.exists(url),
+		messaging.messageExists(url),
+		db.isSortedSetMember('usersRemote:lastCrawled', url), // if url is same as id
+		db.isObjectField('remoteUrl:uid', url),
+	]);
+	switch (true) {
+		case isNote: {
+			return `/post/${encodeURIComponent(url)}`;
+		}
+
+		case isMessage: {
+			if (uid) {
+				const { roomId } = await messaging.getMessageFields(url, ['roomId']);
+				const canView = await messaging.canViewMessage(url, roomId, uid);
+				if (canView) {
+					return `/message/${encodeURIComponent(url)}`;
+				}
+			}
+			break;
+		}
+
+		case isActor: {
+			const slug = await user.getUserField(url, 'userslug');
+			return `/user/${slug}`;
+		}
+
+		case isActorUrl: {
+			const uid = await db.getObjectField('remoteUrl:uid', url);
+			const slug = await user.getUserField(uid, 'userslug');
+			return `/user/${slug}`;
+		}
+	}
+
+	// Guests not allowed to use expensive logic path
+	if (!uid) {
+		return false;
+	}
+
+	// One request allowed every 3 seconds (configured at top)
+	const limited = probeRateLimit.get(uid);
+	if (limited) {
+		return false;
+	}
+
+	// Cached result
+	if (probeCache.has(url)) {
+		return probeCache.get(url);
+	}
+
+	// Opportunistic HEAD
+	try {
+		probeRateLimit.set(uid, true);
+		const probe = await ActivityPub.checkHeader(url).then((result) => {
+			probeCache.set(url, result);
+			return !!result;
+		});
+
+		return !!probe;
+	} catch (e) {
+		if (e.name === 'TimeoutError') {
+			// Return early but retry for caching purposes
+			ActivityPub.checkHeader(url, 1000 * 60).then((result) => {
+				probeCache.set(url, result);
+			}).catch(err => ActivityPub.helpers.log(err.stack));
+			return false;
+		}
+	}
+
+	probeCache.set(url, false);
+	return false;
+};
+
+// ---------------------------------------------------------------------------
+// Shutdown — called during graceful NodeBB shutdown
+// ---------------------------------------------------------------------------
+
+ActivityPub.shutdown = function () {
+	if (SendPool.pool > 0) {
+		SendPool.shutdown();
+	}
+};
+
+// Initialize the send pool now that ActivityPub is fully defined
+SendPool.init(ActivityPub);
+ActivityPub.SendPool = SendPool;

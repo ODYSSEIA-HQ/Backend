@@ -1,0 +1,51 @@
+'use strict';
+
+const helpers = module.exports;
+
+helpers.noop = function () {};
+
+helpers.toMap = function (data) {
+	const map = {};
+	for (let i = 0; i < data.length; i += 1) {
+		map[data[i]._key] = data[i];
+		delete data[i]._key;
+	}
+	return map;
+};
+
+helpers.fieldToString = function (field) {
+	if (field === null || field === undefined) {
+		return field;
+	}
+
+	if (typeof field !== 'string') {
+		field = field.toString();
+	}
+	// if there is a '.' in the field name it inserts subdocument in mongo, replace '.'s with \uff0E
+	// replace $ with \uff04 so we can use $ in document fields
+	return field.replace(/\./g, '\uff0E')
+		.replace(/\$/g, '\uFF04');
+};
+
+helpers.serializeData = function (data) {
+	const serialized = {};
+	for (const [field, value] of Object.entries(data)) {
+		if (field !== '') {
+			serialized[helpers.fieldToString(field)] = value;
+		}
+	}
+	return serialized;
+};
+
+helpers.deserializeData = function (data) {
+	const deserialized = {};
+	for (const [field, value] of Object.entries(data)) {
+		deserialized[field.replace(/\uff0E/g, '.')] = value;
+	}
+	return deserialized;
+};
+
+helpers.valueToString = function (value) {
+	return String(value);
+};
+

@@ -1,0 +1,26 @@
+{
+	"you-are-on": "Jste u <strong>%1:%2</strong>",
+	"ip": "IP <strong>%1</strong>",
+	"nodes-responded": "%1 vazeb odpovědělo během %2ms.",
+	"host": "host",
+	"primary": "primární / práce",
+	"pid": "pid",
+	"nodejs": "nodejs",
+	"online": "připojen",
+	"git": "git",
+	"process-memory": "využito rss/heap",
+	"system-memory": "systémová paměť",
+	"used-memory-process": "Paměť využitá jednotlivými procesy",
+	"used-memory-os": "Využitá systémová paměť",
+	"total-memory-os": "Celková systémová paměť",
+	"load": "zatížení systému",
+	"cpu-usage": "využití CPU",
+	"uptime": "čas spuštění",
+
+	"registered": "Registrován",
+	"sockets": "Sockety",
+	"connection-count": "Počet připojení",
+	"guests": "Hosté",
+
+	"info": "Informace"
+}

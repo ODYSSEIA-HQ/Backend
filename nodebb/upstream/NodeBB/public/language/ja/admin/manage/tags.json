@@ -1,0 +1,20 @@
+{
+	"manage-tags": "タグを管理",
+	"none": "フォーラムにはまだタグ付きのスレッドがありません。",
+	"bg-color": "背景色",
+	"text-color": "文字色",
+	"description": "クリックまたはドラッグでタグを選択し、<code>CTRL</code> キーで複数選択できます。",
+	"create": "タグを作成",
+	"add-tag": "タグを追加",
+	"modify": "タグを変更",
+	"rename": "タグ名を変更",
+	"delete": "選択したタグを削除",
+	"search": "タグを検索...",
+	"settings": "タグ設定",
+	"name": "タグ名",
+
+	"alerts.editing": "タグを編集中",
+	"alerts.confirm-delete": "選択したタグを削除しますか？",
+	"alerts.update-success": "タグを更新しました！",
+	"reset-colors": "色をリセット"
+}

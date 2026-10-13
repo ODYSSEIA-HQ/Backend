@@ -1,0 +1,867 @@
+'use strict';
+
+
+define('forum/chats', [
+	'components',
+	'mousetrap',
+	'forum/chats/recent',
+	'forum/chats/create',
+	'forum/chats/manage',
+	'forum/chats/messages',
+	'forum/chats/user-list',
+	'forum/chats/message-search',
+	'forum/chats/pinned-messages',
+	'forum/chats/events',
+	'forum/chats/search',
+	'autocomplete',
+	'hooks',
+	'modals',
+	'benchpress',
+	'alerts',
+	'chat',
+	'api',
+	'uploadHelpers',
+	'modules/flags',
+], function (
+	components, mousetrap, recentChats, create,
+	manage, messages, userList, messageSearch, pinnedMessages,
+	events, search, autocomplete, hooks, modals, benchpress, alerts,
+	chatModule, api, uploadHelpers, flags
+) {
+	const Chats = {
+		activeAutocomplete: new WeakMap(),
+		newMessage: false,
+	};
+
+	let chatNavWrapper = null;
+	let chatMainWrapper = null;
+
+	let isAtBottom = true;
+
+	$(window).on('action:ajaxify.start', function () {
+		if (chatMainWrapper) {
+			Chats.destroyAutoComplete(chatMainWrapper.find('[component="chat/input"]'));
+		}
+		if (ajaxify.data.template.chats) {
+			chatModule.leaveSocketRoom(ajaxify.data.roomId);
+			if (ajaxify.data.publicRooms) {
+				socket.emit('modules.chats.leavePublic', ajaxify.data.publicRooms.map(r => r.roomId));
+			}
+		}
+	});
+
+	Chats.init = function () {
+		if (!utils.isMobile()) {
+			$('.chats-full [data-bs-toggle="tooltip"]').tooltip({
+				trigger: 'hover',
+				container: '#content',
+			});
+		}
+		socket.emit('modules.chats.enterPublic', ajaxify.data.publicRooms.map(r => r.roomId));
+		const env = utils.findBootstrapEnvironment();
+		chatNavWrapper = $('[component="chat/nav-wrapper"]');
+		chatMainWrapper = $('[component="chat/main-wrapper"]');
+
+		Chats.addSocketListeners();
+		Chats.addGlobalEventListeners();
+
+		recentChats.init();
+
+		Chats.addEventListeners();
+		Chats.setActive(ajaxify.data.roomId);
+
+		if (env === 'md' || env === 'lg' || env === 'xl' || env === 'xxl') {
+			Chats.addHotkeys();
+		}
+
+		const chatContentEl = chatMainWrapper.find('[component="chat/message/content"]');
+		messages.wrapImagesInLinks(chatContentEl);
+		if (ajaxify.data.scrollToIndex) {
+			messages.toggleScrollUpAlert(chatContentEl);
+			const scrollToEl = chatContentEl.find(`[data-index="${ajaxify.data.scrollToIndex - 1}"]`);
+			messages.scrollToMessageAfterImageLoad(chatContentEl, scrollToEl);
+		} else {
+			messages.scrollToBottomAfterImageLoad(chatContentEl);
+		}
+		create.init();
+		search.init(document.getElementById('search-chats'), document.getElementById('private-rooms'));
+
+		hooks.fire('action:chat.loaded', $('.chats-full'));
+	};
+
+	Chats.addEventListeners = function () {
+		const { roomId } = ajaxify.data;
+
+		const chatMessageContent = chatMainWrapper.find('[component="chat/message/content"]');
+		const chatControls = chatMainWrapper.find('[component="chat/controls"]');
+		const chatInput = chatMainWrapper.find('[component="chat/input"]');
+
+		Chats.addSendHandlers(roomId, chatInput, chatMainWrapper.find('.expanded-chat button[data-action="send"]'));
+		Chats.addMobileResizeHandler(chatMessageContent);
+		Chats.addPopoutHandler();
+		Chats.addActionHandlers(chatMainWrapper.find('[component="chat/message/window"]'), roomId);
+		Chats.addManageHandler(roomId, chatControls.find('[data-action="manage"]'));
+		Chats.addRenameHandler(roomId, chatControls.find('[data-action="rename"]'));
+		Chats.addLeaveHandler(roomId, chatControls.find('[data-action="leave"]'));
+		Chats.addDeleteHandler(roomId, chatControls.find('[data-action="delete"]'));
+		Chats.addScrollHandler(roomId, ajaxify.data.uid, chatMessageContent);
+		Chats.addScrollBottomHandler(roomId, chatMessageContent);
+		Chats.addParentHandler(chatMainWrapper);
+		Chats.addPinnedTimestampHandler(chatMainWrapper);
+		Chats.addCharactersLeftHandler(chatMainWrapper);
+		Chats.addTextareaResizeHandler(chatMainWrapper);
+		Chats.addTypingHandler(chatMainWrapper, roomId);
+		Chats.addIPHandler(chatMainWrapper);
+		Chats.addCopyTextLinkHandler(chatMainWrapper);
+		Chats.createAutoComplete(roomId, chatInput);
+		Chats.addUploadHandler({
+			dragDropAreaEl: $('.chats-full'),
+			pasteEl: chatInput,
+			uploadFormEl: chatMainWrapper.find('[component="chat/upload"]'),
+			uploadBtnEl: chatMainWrapper.find('[component="chat/upload/button"]'),
+			inputEl: chatInput,
+		});
+
+		chatMainWrapper.find('[data-action="close"]').on('click', async function () {
+			if (ajaxify.data.roomId) {
+				await api.del(`/chats/${ajaxify.data.roomId}/state`, {});
+			}
+			Chats.switchChat();
+		});
+		userList.init(roomId, chatMainWrapper);
+		Chats.addNotificationSettingHandler(roomId, chatMainWrapper);
+		messageSearch.init(roomId, chatMainWrapper);
+		Chats.addPublicRoomSortHandler();
+		Chats.addTooltipHandler(chatMainWrapper);
+		pinnedMessages.init(chatMainWrapper);
+	};
+
+	Chats.addPublicRoomSortHandler = function () {
+		if (app.user.isAdmin && !utils.isMobile()) {
+			app.loadJQueryUI(() => {
+				const publicRoomList = $('[component="chat/public"]');
+				publicRoomList.sortable({
+					handle: '[component="chat/public/room/sort/handle"]',
+					items: '[component="chat/public/room"]',
+					axis: 'y',
+					update: async function () {
+						const data = { roomIds: [], scores: [] };
+						publicRoomList.find('[data-roomid]').each((idx, el) => {
+							data.roomIds.push($(el).attr('data-roomid'));
+							data.scores.push(idx);
+						});
+						await api.put('/chats/sort', data);
+					},
+				});
+			});
+		}
+	};
+
+	Chats.addTooltipHandler = function (containerEl) {
+		if (utils.isMobile()) {
+			return;
+		}
+
+		containerEl.find('[data-manual-tooltip]').tooltip({
+			trigger: 'manual',
+			animation: false,
+			placement: 'bottom',
+		}).on('mouseenter', function (ev) {
+			const target = $(ev.target);
+			const isDropdown = target.hasClass('dropdown-menu') || !!target.parents('.dropdown-menu').length;
+			if (!isDropdown) {
+				$(this).tooltip('show');
+			}
+		}).on('click mouseleave', function () {
+			$(this).tooltip('hide');
+		});
+
+		containerEl.tooltip({
+			selector: '[component="chat/message/controls"] > .btn-group > button',
+			placement: 'top',
+			container: '#content',
+			animation: false,
+			trigger: 'hover',
+		});
+	};
+
+	Chats.addNotificationSettingHandler = function (roomId, containerEl) {
+		const notifSettingEl = containerEl.find('[component="chat/notification/setting"]');
+
+		notifSettingEl.find('[data-value]').on('click', async function () {
+			notifSettingEl.find('i.fa-check').addClass('hidden');
+			const $this = $(this);
+			$this.find('i.fa-check').removeClass('hidden');
+			notifSettingEl.find('[component="chat/notification/setting/icon"]').attr('class', `fa ${$this.attr('data-icon')}`);
+			await api.put(`/chats/${roomId}/watch`, {
+				value: $this.attr('data-value'),
+			});
+		});
+	};
+
+	function gotoMessage(event, timestampEl, mid) {
+		// :visible because the conversation is swapped out for the message search
+		// results, and there is nothing to scroll while those are shown
+		const contentEl = timestampEl
+			.closest('[component="chat/message/window"]')
+			.find('[component="chat/message/content"]:visible');
+		const messageEl = contentEl.find(`[component="chat/message"][data-mid="${mid}"]`);
+		if (messageEl.length) {
+			event.preventDefault();
+			messages.scrollToMessage(messageEl);
+			return false;
+		}
+	}
+
+	Chats.addParentHandler = function (mainWrapper) {
+		mainWrapper.off('click', '[component="chat/message/parent"]')
+			.on('click', '[component="chat/message/parent"]', function () {
+				const parentEl = $(this);
+				parentEl.find('[component="chat/message/parent/content"]').toggleClass('line-clamp-1');
+				parentEl.find('.chat-timestamp').toggleClass('hidden');
+				parentEl.toggleClass('flex-column').toggleClass('flex-row');
+				const chatContent = parentEl.parents('[component="chat/message/content"]');
+				if (chatContent.length && messages.isAtBottom(chatContent)) {
+					messages.scrollToBottom(chatContent);
+				}
+			});
+
+		// deeper selector, so this runs before the collapse handler above
+		mainWrapper.off('click', '[component="chat/message/parent"] .chat-timestamp')
+			.on('click', '[component="chat/message/parent"] .chat-timestamp', function (ev) {
+				const timestampEl = $(this);
+				return gotoMessage(
+					ev, timestampEl, timestampEl.parents('[data-parent-mid]').attr('data-parent-mid')
+				);
+			});
+	};
+
+	// a pinned message is shown out of context, so its own timestamp links back to
+	// where it sits in the conversation
+	Chats.addPinnedTimestampHandler = function (mainWrapper) {
+		// scoped to .message-header, as the timestamp of a quoted parent rendered in
+		// the panel is already handled by addParentHandler
+		const selector = '[component="chat/messages/pinned"] .message-header .chat-timestamp';
+		mainWrapper.off('click', selector)
+			.on('click', selector, function (ev) {
+				const timestampEl = $(this);
+				return gotoMessage(
+					ev, timestampEl, timestampEl.parents('[component="chat/message"]').attr('data-mid')
+				);
+			});
+	};
+
+
+	Chats.addUploadHandler = function (options) {
+		uploadHelpers.init({
+			dragDropAreaEl: options.dragDropAreaEl,
+			pasteEl: options.pasteEl,
+			uploadFormEl: options.uploadFormEl,
+			uploadBtnEl: options.uploadBtnEl,
+			route: '/api/post/upload', // using same route as post uploads
+			callback: function (uploads) {
+				const inputEl = options.inputEl;
+				let text = inputEl.val();
+				uploads.forEach((upload) => {
+					text = text + (!text.endsWith('\n') ? '\n' : '') + (upload.isImage ? '!' : '') + `[${upload.filename}](${upload.url})\n`;
+				});
+				inputEl.val(text).trigger('input');
+			},
+		});
+	};
+
+	Chats.addIPHandler = function (container) {
+		container.off('click', '.chat-ip-button')
+			.on('click', '.chat-ip-button', async function (ev) {
+				ev.stopPropagation();
+				const ipEl = $(this);
+				const ipCopyText = ipEl.find('.copy .copy-ip-text');
+				let ip = ipEl.attr('data-ip');
+				if (ip) {
+					navigator.clipboard.writeText(ip);
+					ipCopyText.translateText('[[global:copied]]');
+					setTimeout(() => ipCopyText.text(ip), 2000);
+					return;
+				}
+				const mid = ipEl.parents('[data-mid]').attr('data-mid');
+				({ ip } = await api.get(`/chats/${ajaxify.data.roomId}/messages/${mid}/ip`));
+				ipEl.attr('data-ip', ip);
+				ipEl.find('.show').addClass('hidden');
+				ipEl.find('.copy').removeClass('hidden');
+				ipCopyText.text(ip);
+			});
+	};
+
+	Chats.addCopyTextLinkHandler = function (container) {
+		function doCopy(copyEl, text) {
+			navigator.clipboard.writeText(text);
+			copyEl.find('i').addClass('fa-check').removeClass('fa-link');
+			setTimeout(() => copyEl.find('i').removeClass('fa-check').addClass('fa-link'), 2000);
+		}
+
+		container.off('click', '[data-action="copy-link"]')
+			.on('click', '[data-action="copy-link"]', function (ev) {
+				ev.stopPropagation();
+				const copyEl = $(this);
+				const mid = copyEl.attr('data-mid');
+				if (mid) {
+					doCopy(copyEl, `${config.url}/message/${mid}`);
+				}
+			});
+
+		container.off('click', '[data-action="copy-text"]')
+			.on('click', '[data-action="copy-text"]', function (ev) {
+				ev.stopPropagation();
+				const copyEl = $(this);
+				const messageEl = copyEl.parents('[data-mid]');
+				if (messageEl.length) {
+					doCopy(copyEl, messageEl.find('[component="chat/message/body"]').text().trim());
+				}
+			});
+	};
+
+	Chats.addPopoutHandler = function () {
+		$('[data-action="pop-out"]').on('click', function () {
+			const text = chatMainWrapper.find('[component="chat/input"]').val();
+			const roomId = ajaxify.data.roomId;
+
+			if (app.previousUrl && app.previousUrl.match(/chats/)) {
+				ajaxify.go('user/' + ajaxify.data.userslug + '/chats', function () {
+					chatModule.openChat(roomId, ajaxify.data.uid);
+				}, true);
+			} else {
+				window.history.go(-1);
+				chatModule.openChat(roomId, ajaxify.data.uid);
+			}
+
+			$(window).one('action:chat.loaded', function (ev, chatModal) {
+				chatModal.find('[component="chat/input"]').val(text);
+			});
+		});
+	};
+
+	function getTopVisibleMessageIndex(el) {
+		const containerTop = el.offset().top;
+		let index = 0;
+		el.children('[data-index]').each(function () {
+			const msgEl = $(this);
+			const msgIndex = parseInt(msgEl.attr('data-index'), 10);
+			// live-received messages don't carry an index; skip them
+			if (!isNaN(msgIndex) && msgEl.offset().top + msgEl.outerHeight() > containerTop) {
+				index = msgIndex + 1;
+				return false;
+			}
+		});
+		return index;
+	}
+
+	function updateUrlWithMessageIndex(roomId, el) {
+		if (
+			!ajaxify.data.template.chats || !history.replaceState ||
+			String(ajaxify.data.roomId) !== String(roomId) || !ajaxify.data.userslug
+		) {
+			return;
+		}
+		const index = messages.isAtBottom(el) ? 0 : getTopVisibleMessageIndex(el);
+		const newUrl = `user/${ajaxify.data.userslug}/chats/${roomId}${index > 0 ? `/${index}` : ''}`;
+		const fullPath = `${config.relative_path}/${newUrl}`;
+		if (fullPath === window.location.pathname) {
+			return;
+		}
+		const search = window.location.search || '';
+		history.replaceState({
+			url: newUrl + search,
+		}, null, `${window.location.protocol}//${window.location.host}${fullPath}${search}`);
+	}
+
+	Chats.addScrollHandler = function (roomId, uid, el) {
+		let loading = false;
+		let previousScrollTop = el.scrollTop();
+		let currentScrollTop = previousScrollTop;
+
+		el.off('scroll');
+		el.on('scroll', function () {
+			isAtBottom = messages.isAtBottom(el);
+		});
+		el.on('scroll', utils.debounce(async function () {
+			updateUrlWithMessageIndex(roomId, el);
+			if (parseInt(el.attr('data-ignore-next-scroll'), 10) === 1) {
+				el.removeAttr('data-ignore-next-scroll');
+				previousScrollTop = el.scrollTop();
+				return;
+			}
+			messages.toggleScrollUpAlert(el);
+			if (loading) {
+				return;
+			}
+			currentScrollTop = el.scrollTop();
+
+			const direction = currentScrollTop > previousScrollTop ? 1 : -1;
+			previousScrollTop = currentScrollTop;
+			const scrollPercent = 100 * (currentScrollTop / (el[0].scrollHeight - el.height()));
+			const top = 15;
+			const bottom = 85;
+
+			if (direction === 1 && !ajaxify.data.scrollToIndex) {
+				// dont trigger infinitescroll if there is no /index in url
+				return;
+			}
+
+			if ((scrollPercent < top && direction === -1) || (scrollPercent > bottom && direction === 1)) {
+				loading = true;
+
+				try {
+					await messages.loadMoreMessages(el, uid, roomId, direction);
+				} catch (err) {
+					alerts.error(err);
+				} finally {
+					loading = false;
+				}
+			}
+		}, 100));
+	};
+
+	Chats.addScrollBottomHandler = function (roomId, chatContent) {
+		chatContent.parents('[component="chat/message/window"]')
+			.find('[component="chat/messages/scroll-up-alert"]')
+			.off('click').on('click', function () {
+				if (ajaxify.data.scrollToIndex && parseInt(ajaxify.data.roomId, 10) === parseInt(roomId, 10)) {
+					Chats.switchChat(roomId);
+				} else {
+					messages.scrollToBottom(chatContent);
+				}
+			});
+	};
+
+	Chats.addCharactersLeftHandler = function (parent) {
+		const element = parent.find('[component="chat/input"]');
+		element.on('change keyup paste', function () {
+			messages.updateRemainingLength(parent);
+		});
+	};
+
+	Chats.addTextareaResizeHandler = function (parent) {
+		// https://stackoverflow.com/questions/454202/creating-a-textarea-with-auto-resize
+		const textarea = parent.find('[component="chat/input"]');
+		textarea.on('input', function () {
+			const chatContentEl = parent.find('[component="chat/message/content"]');
+			const isAtBottom = messages.isAtBottom(chatContentEl);
+			textarea.css({ height: 0 });
+			textarea.css({ height: messages.calcAutoTextAreaHeight(textarea) + 'px' });
+			if (isAtBottom) {
+				messages.scrollToBottom(chatContentEl);
+			}
+		});
+	};
+
+	Chats.addTypingHandler = function (parent, roomId) {
+		const textarea = parent.find('[component="chat/input"]');
+		function emitTyping(typing) {
+			api.put(`/chats/${roomId}/typing`, { typing }).catch(alerts.error);
+		}
+
+		textarea.on('focus', () => textarea.val() && emitTyping(true));
+		textarea.on('blur', () => emitTyping(false));
+		let timeoutid = 0;
+		let hasText = !!textarea.val();
+		textarea.on('input', function () {
+			const _hasText = !!textarea.val();
+			if (_hasText !== hasText) {
+				clearTimeout(timeoutid);
+				timeoutid = 0;
+				hasText = _hasText;
+				emitTyping(hasText);
+			} else if (!timeoutid) {
+				timeoutid = setTimeout(() => {
+					emitTyping(!!textarea.val());
+					timeoutid = 0;
+				}, 5000);
+			}
+		});
+	};
+
+	Chats.addActionHandlers = function (element, roomId) {
+		element.on('click', '[data-mid] [data-action]', function () {
+			const msgEl = $(this).parents('[data-mid]');
+			const messageId = msgEl.attr('data-mid');
+			const action = this.getAttribute('data-action');
+			$(this).tooltip('dispose');
+			switch (action) {
+				case 'reply':
+					messages.prepReplyTo(msgEl, element);
+					break;
+				case 'edit':
+					messages.prepEdit(msgEl, messageId, roomId);
+					break;
+				case 'delete':
+					messages.delete(messageId, roomId);
+					break;
+				case 'restore':
+					messages.restore(messageId, roomId);
+					break;
+				case 'pin':
+					pinnedMessages.pin(messageId, roomId);
+					break;
+				case 'unpin':
+					pinnedMessages.unpin(messageId, roomId);
+					break;
+				case 'flag':
+					Chats.flagMessage(msgEl.attr('data-mid'), roomId);
+					break;
+			}
+		});
+	};
+
+	Chats.flagMessage = function (messageId, roomId) {
+		flags.showFlagModal({
+			type: 'message',
+			id: messageId,
+			roomId: roomId,
+		});
+	};
+
+	Chats.addHotkeys = function () {
+		mousetrap.bind('ctrl+up', function () {
+			const activeContact = ('.chats-list .active');
+			const prev = activeContact.prevAll('[data-roomid]').first();
+			if (prev.length && prev.attr('data-roomid')) {
+				Chats.switchChat(prev.attr('data-roomid'));
+			}
+		});
+		mousetrap.bind('ctrl+down', function () {
+			const activeContact = $('.chats-list .active');
+			const next = activeContact.nextAll('[data-roomid]').first();
+			if (next.length && next.attr('data-roomid')) {
+				Chats.switchChat(next.attr('data-roomid'));
+			}
+		});
+		mousetrap.bind('up', function (e) {
+			const inputEl = chatMainWrapper.find('[component="chat/input"]');
+			if (e.target === inputEl.get(0) && !inputEl.val()) {
+				// Retrieve message id from messages list
+				const message = chatMainWrapper.find('[component="chat/messages"] .chat-message[data-self="1"]').last();
+				if (!message.length) {
+					return;
+				}
+				const lastMid = message.attr('data-mid');
+				messages.prepEdit(message, lastMid, ajaxify.data.roomId);
+			}
+		});
+	};
+
+	Chats.addManageHandler = function (roomId, buttonEl) {
+		manage.init(roomId, buttonEl);
+	};
+
+	Chats.addLeaveHandler = function (roomId, buttonEl) {
+		buttonEl.on('click', function () {
+			modals.confirm({
+				size: 'small',
+				title: '[[modules:chat.leave]]',
+				message: '<p>[[modules:chat.leave-prompt]]</p><p class="form-text">[[modules:chat.leave-help]]</p>',
+				callback: function (ok) {
+					if (ok) {
+						api.del(`/chats/${roomId}/users/${app.user.uid}`, {}).then(() => {
+							// Return user to chats page. If modal, close modal.
+							const modal = buttonEl.parents('.chat-modal');
+							if (modal.length) {
+								chatModule.close(modal);
+							} else {
+								Chats.destroyAutoComplete(
+									chatMainWrapper.find('[component="chat/input"]')
+								);
+								ajaxify.go('chats');
+							}
+						}).catch(alerts.error);
+					}
+				},
+			});
+		});
+	};
+
+	Chats.addDeleteHandler = function (roomId, buttonEl) {
+		buttonEl.on('click', function () {
+			modals.confirm({
+				size: 'small',
+				title: '[[modules:chat.delete]]',
+				message: '<p>[[modules:chat.delete-prompt]]</p>',
+				callback: function (ok) {
+					if (ok) {
+						api.del(`/admin/chats/${roomId}`, {}).then(() => {
+							// Return user to chats page. If modal, close modal.
+							const modal = buttonEl.parents('.chat-modal');
+							if (modal.length) {
+								chatModule.close(modal);
+							} else {
+								Chats.destroyAutoComplete(
+									chatMainWrapper.find('[component="chat/input"]')
+								);
+								ajaxify.go('chats');
+							}
+						}).catch(alerts.error);
+					}
+				},
+			});
+		});
+	};
+
+	Chats.addRenameHandler = function (roomId, buttonEl) {
+		buttonEl.on('click', async function () {
+			const { roomName } = await api.get(`/chats/${roomId}`);
+			const html = await benchpress.render('modals/rename-room', { roomName });
+			const modal = await modals.dialog({
+				title: '[[modules:chat.rename-room]]',
+				message: html,
+				onEscape: true,
+				buttons: {
+					save: {
+						label: '[[global:save]]',
+						className: 'btn-primary',
+						callback: function () {
+							api.put(`/chats/${roomId}`, {
+								name: modal.find('#roomName').val(),
+							}).then(() => {
+								modal.modal('hide');
+							}).catch(alerts.error);
+							return false;
+						},
+					},
+				},
+			});
+			modal.on('shown.bs.modal', function () {
+				modal.find('#roomName').selectRange(0, roomName.length).focus();
+			});
+		});
+	};
+
+	Chats.addSendHandlers = function (roomId, inputEl, sendEl) {
+		if (!utils.isMobile()) {
+			inputEl.off('keypress').on('keypress', function (e) {
+				if (e.which === 13 && !e.shiftKey) {
+					messages.sendMessage(roomId, inputEl);
+					return false;
+				}
+			});
+		}
+
+		sendEl.off('click').on('click', function () {
+			messages.sendMessage(roomId, inputEl);
+			inputEl.focus();
+			return false;
+		});
+	};
+
+	Chats.addMobileResizeHandler = function (chatMessageContent) {
+		if (utils.isMobile() && window.visualViewport) {
+			window.visualViewport.addEventListener('resize', function () {
+				if (isAtBottom) {
+					messages.scrollToBottom(chatMessageContent);
+				}
+			});
+		}
+	};
+
+	Chats.createAutoComplete = function (roomId, element, options = {}) {
+		if (!element.length) {
+			return;
+		}
+
+		const data = {
+			element: element,
+			strategies: [],
+			options: {
+				style: {
+					'z-index': 20000,
+					flex: 0,
+					top: 'inherit',
+					'max-height': '250px',
+					overflow: 'auto',
+				},
+				placement: 'top',
+				className: `chat-autocomplete-dropdown-${roomId} dropdown-menu textcomplete-dropdown ghost-scrollbar`,
+				...options,
+			},
+		};
+
+		$(window).trigger('chat:autocomplete:init', data);
+		if (data.strategies.length) {
+			const autocompleteEl = autocomplete.setup(data);
+			Chats.activeAutocomplete.set(element[0], autocompleteEl);
+			return autocompleteEl;
+		}
+	};
+
+	Chats.destroyAutoComplete = function ($input) {
+		const ac = Chats.activeAutocomplete.get($input[0]);
+		if (ac) {
+			ac.destroy();
+			Chats.activeAutocomplete.delete($input[0]);
+		}
+	};
+
+	Chats.leave = function (el) {
+		const roomId = el.attr('data-roomid');
+		api.del(`/chats/${roomId}/users/${app.user.uid}`, {}).then(() => {
+			if (parseInt(roomId, 10) === parseInt(ajaxify.data.roomId, 10)) {
+				ajaxify.go('user/' + ajaxify.data.userslug + '/chats');
+			} else {
+				el.remove();
+			}
+			Chats.destroyAutoComplete(chatMainWrapper.find('[component="chat/input"]'));
+			const modal = chatModule.getModal(roomId);
+			if (modal.length) {
+				chatModule.close(modal);
+			}
+		}).catch(alerts.error);
+	};
+
+	Chats.switchChat = async function (roomId) {
+		// Allow empty arg for return to chat list/close chat
+		if (!roomId) {
+			roomId = '';
+		}
+		Chats.destroyAutoComplete(chatMainWrapper.find('[component="chat/input"]'));
+		chatModule.leaveSocketRoom(ajaxify.data.roomId);
+
+		const params = new URL(document.location).searchParams;
+		params.set('switch', 1);
+		const url = `user/${ajaxify.data.userslug}/chats/${roomId}?${params.toString()}`;
+		const dataUrl = `/api/${url}`;
+		try {
+			const payload = await api.get(dataUrl);
+			const html = await app.parseAndTranslate('partials/chats/message-window', payload);
+			chatMainWrapper.html(html);
+			html.find('.timeago').timeago();
+			ajaxify.data = { ...ajaxify.data, ...payload, roomId: roomId };
+		} catch (err) {
+			return alerts.error(err);
+		}
+
+		chatMainWrapper.attr('data-roomid', roomId);
+		chatNavWrapper = $('[component="chat/nav-wrapper"]');
+		ajaxify.updateTitle(ajaxify.data.title);
+		$('body').toggleClass('chat-loaded', !!roomId);
+		if (!utils.isMobile()) {
+			chatMainWrapper.find('[data-bs-toggle="tooltip"]').tooltip({
+				trigger: 'hover',
+				container: '#content',
+			});
+		}
+		Chats.setActive(roomId);
+		Chats.addEventListeners();
+		hooks.fire('action:chat.loaded', $('.chats-full'));
+		messages.scrollToBottomAfterImageLoad(
+			chatMainWrapper.find('[component="chat/message/content"]')
+		);
+		if (history.pushState) {
+			history.pushState({
+				url: url,
+			}, null, `${window.location.protocol}//${window.location.host}${config.relative_path}/${url}`);
+		}
+	};
+
+	Chats.addGlobalEventListeners = function () {
+		$(window).off('mousemove keypress click', onUserInteraction)
+			.on('mousemove keypress click', onUserInteraction);
+	};
+
+	function onUserInteraction() {
+		if (Chats.newMessage && ajaxify.data.roomId) {
+			// mark current room read on user interaction
+			api.del(`/chats/${ajaxify.data.roomId}/state`, {});
+			Chats.newMessage = false;
+		}
+	}
+
+	Chats.addSocketListeners = function () {
+		events.init();
+
+		messages.addSocketListeners();
+	};
+
+	Chats.updateTeaser = async function (roomId, teaser) {
+		if (!ajaxify.data.template.chats || ajaxify.data.public || !app.user.userslug) {
+			return;
+		}
+
+		function moveChatAndHrToTop(roomEl) {
+			const hr = roomEl.next('hr');
+			const recentChats = components.get('chat/recent');
+			const chatCount = recentChats.find('[data-roomid]').length;
+			recentChats.prepend(roomEl);
+			if (hr.length || chatCount > 1) {
+				roomEl.after(hr.length ? hr : `<hr class="my-1">`);
+			}
+		}
+
+		const roomEl = chatNavWrapper.find(`[data-roomid="${roomId}"]`);
+		if (roomEl.length) {
+			const html = await app.parseAndTranslate('partials/chats/room-teaser', {
+				teaser: teaser,
+			});
+			roomEl.find('[component="chat/room/teaser"]').html(html[0].outerHTML);
+			roomEl.find('.timeago').timeago();
+			moveChatAndHrToTop(roomEl);
+		} else if (String(ajaxify.data.uid) === String(app.user.uid)) {
+			// The room isn't on screen, so it has to be fetched -- but `GET /chats`
+			// returns the *viewer's* rooms, which have no business being spliced
+			// into a list that is showing another user's rooms.
+			const { rooms } = await api.get(`/chats`, { start: 0, perPage: 2 });
+			const room = rooms.find(r => parseInt(r.roomId, 10) === parseInt(roomId, 10));
+			if (room) {
+				const html = await app.parseAndTranslate('chats', 'rooms', {
+					rooms: [room],
+					showBottomHr: true,
+				});
+				moveChatAndHrToTop(html);
+			}
+		}
+	};
+
+	Chats.markChatPageElUnread = function (data) {
+		if (!ajaxify.data.template.chats) {
+			return;
+		}
+
+		const roomEl = chatNavWrapper.find('[data-roomid=' + data.roomId + ']');
+		chatModule.markChatElUnread(roomEl, true);
+	};
+
+	Chats.increasePublicRoomUnreadCount = function (roomEl) {
+		const unreadCountEl = roomEl.find('[component="chat/public/room/unread/count"]');
+		const newCount = (parseInt(unreadCountEl.attr('data-count'), 10) || 0) + 1;
+		Chats.updatePublicRoomUnreadCount(roomEl, newCount);
+	};
+
+	Chats.updatePublicRoomUnreadCount = function (roomEl, count) {
+		const unreadCountEl = roomEl.find('[component="chat/public/room/unread/count"]');
+		const countText = count > 50 ? '50+' : count;
+		unreadCountEl.toggleClass('hidden', count <= 0).text(countText).attr('data-count', count);
+	};
+
+	Chats.setActive = function (roomId) {
+		chatNavWrapper.find('[data-roomid]').removeClass('active');
+		if (roomId) {
+			socket.emit('modules.chats.enter', roomId);
+			const chatEl = chatNavWrapper.find(`[data-roomid="${roomId}"]`);
+			chatEl.addClass('active');
+			if (chatEl.length) {
+				chatEl[0].scrollIntoView({ block: 'nearest' });
+			}
+			if (chatEl.hasClass('unread')) {
+				api.del(`/chats/${roomId}/state`, {});
+				chatEl.removeClass('unread');
+			}
+
+			if (!utils.isMobile()) {
+				chatMainWrapper.find('[component="chat/input"]').focus();
+			}
+			messages.updateTextAreaHeight(chatMainWrapper.find(`[component="chat/messages"][data-roomid="${roomId}"]`));
+		}
+
+		chatNavWrapper.attr('data-loaded', roomId ? '1' : '0');
+	};
+
+	return Chats;
+});
+

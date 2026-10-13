@@ -1,0 +1,450 @@
+'use strict';
+
+const nconf = require('nconf');
+const semver = require('semver');
+const winston = require('winston');
+const _ = require('lodash');
+
+const tx = require('../../translator');
+const versions = require('../../admin/versions');
+const db = require('../../database');
+const meta = require('../../meta');
+const analytics = require('../../analytics');
+const plugins = require('../../plugins');
+const user = require('../../user');
+const topics = require('../../topics');
+const utils = require('../../utils');
+const emailer = require('../../emailer');
+const pagination = require('../../pagination');
+
+const dashboardController = module.exports;
+
+dashboardController.get = async function (req, res) {
+	const [stats, notices, latestVersion, lastrestart, isAdmin, popularSearches] = await Promise.all([
+		getStats(),
+		getNotices(req),
+		getLatestVersion(),
+		getLastRestart(),
+		user.isAdministrator(req.uid),
+		getPopularSearches(),
+	]);
+	const version = nconf.get('version');
+	const latestValidVersion = semver.valid(latestVersion);
+
+	res.render('admin/dashboard', {
+		graphTitle: '[[admin/dashboard:forum-traffic]]',
+		version: version,
+		lookupFailed: latestValidVersion === null,
+		latestVersion: latestValidVersion,
+		upgradeAvailable: latestValidVersion && semver.gt(latestValidVersion, version),
+		currentPrerelease: versions.isPrerelease.test(version),
+		notices: notices,
+		stats: stats,
+		canRestart: !!process.send,
+		lastrestart: lastrestart,
+		showSystemControls: isAdmin,
+		popularSearches: popularSearches,
+		hideAllTime: true,
+	});
+};
+
+async function getNotices(req) {
+	const notices = [
+		{
+			done: !meta.reloadRequired,
+			doneText: '[[admin/dashboard:restart-not-required]]',
+			notDoneText: '[[admin/dashboard:restart-required]]',
+		},
+		{
+			done: plugins.hooks.hasListeners('filter:search.query'),
+			doneText: '[[admin/dashboard:search-plugin-installed]]',
+			notDoneText: '[[admin/dashboard:search-plugin-not-installed]]',
+			tooltip: '[[admin/dashboard:search-plugin-tooltip]]',
+			link: '/admin/extend/plugins',
+		},
+	];
+
+	if (emailer.fallbackNotFound) {
+		notices.push({
+			done: false,
+			notDoneText: '[[admin/dashboard:fallback-emailer-not-found]]',
+		});
+	}
+
+	if (process.env.NODE_ENV !== 'production') {
+		notices.push({
+			done: false,
+			notDoneText: '[[admin/dashboard:running-in-development]]',
+		});
+	}
+
+	if (req && !nconf.get('trust_proxy') && req.get('x-forwarded-for')) {
+		notices.push({
+			done: false,
+			notDoneText: '[[admin/dashboard:trust-proxy-warning]]',
+			tooltip: '[[admin/dashboard:trust-proxy-tooltip]]',
+		});
+	}
+
+	const configuredUrl = nconf.get('url');
+	if (configuredUrl === 'http://localhost:4567') {
+		notices.push({
+			done: false,
+			notDoneText: '[[admin/dashboard:localhost-warning]]',
+		});
+	}
+
+	if (configuredUrl && req) {
+		const requestHost = req.get('host');
+		const configuredHost = new URL(configuredUrl).host;
+		if (requestHost !== configuredHost) {
+			notices.push({
+				done: false,
+				notDoneText: tx.compile('admin/dashboard:url-mismatch-warning', requestHost, configuredHost),
+			});
+		}
+	}
+
+	return await plugins.hooks.fire('filter:admin.notices', notices);
+}
+
+async function getLatestVersion() {
+	try {
+		return await versions.getLatestVersion();
+	} catch (err) {
+		winston.error(`[acp] Failed to fetch latest version\n${err.stack}`);
+	}
+	return null;
+}
+
+dashboardController.getAnalytics = async (req, res, next) => {
+	// Basic validation
+	const validUnits = ['days', 'hours'];
+	const validSets = ['uniquevisitors', 'pageviews', 'pageviews:registered', 'pageviews:bot', 'pageviews:guest', 'pageviews:ap'];
+	const until = req.query.until ? new Date(parseInt(req.query.until, 10)) : Date.now();
+	const count = req.query.count || (req.query.units === 'hours' ? 24 : 30);
+	if (isNaN(until) || !validUnits.includes(req.query.units)) {
+		return next(new Error('[[error:invalid-data]]'));
+	}
+
+	// Filter out invalid sets, if no sets, assume all sets
+	let sets;
+	if (req.query.sets) {
+		sets = Array.isArray(req.query.sets) ? req.query.sets : [req.query.sets];
+		sets = sets.filter(set => validSets.includes(set));
+	} else {
+		sets = validSets;
+	}
+
+	const method = req.query.units === 'days' ? analytics.getDailyStatsForSet : analytics.getHourlyStatsForSet;
+	let payload = await Promise.all(sets.map(set => method(`analytics:${set}`, until, count)));
+	payload = _.zipObject(sets, payload);
+
+	res.json({
+		query: {
+			set: req.query.set,
+			units: req.query.units,
+			until: until,
+			count: count,
+		},
+		result: payload,
+	});
+};
+
+async function getStats() {
+	const cache = require('../../cache');
+	const cachedStats = cache.get('admin:stats');
+	if (cachedStats !== undefined) {
+		return cachedStats;
+	}
+
+	let results = (await Promise.all([
+		getStatsFromAnalytics('pageviews', ''),
+		getStatsFromAnalytics('uniquevisitors', ''),
+		getStatsFromAnalytics('logins', 'loginCount'),
+		getStatsForSet('users:joindate', 'userCount'),
+		getStatsForSet('posts:pid', 'postCount'),
+		getStatsForSet('topics:tid', 'topicCount'),
+		meta.config.activitypubEnabled ? getStatsForSet('postsRemote:pid', '') : null,
+		meta.config.activitypubEnabled ? getStatsForSet('topicsRemote:tid', '') : null,
+		getStatsForSet('messages:mid', 'messageCount'),
+	]));
+
+	results[0].name = '[[admin/dashboard:graphs.page-views]]';
+	results[1].name = '[[admin/dashboard:unique-visitors]]';
+
+	results[2].name = '[[admin/dashboard:logins]]';
+	results[2].href = `${nconf.get('relative_path')}/admin/dashboard/logins`;
+
+	results[3].name = '[[admin/dashboard:new-users]]';
+	results[3].href = `${nconf.get('relative_path')}/admin/dashboard/users`;
+
+	results[4].name = '[[admin/dashboard:posts]]';
+
+	results[5].name = '[[admin/dashboard:topics]]';
+	results[5].href = `${nconf.get('relative_path')}/admin/dashboard/topics`;
+
+	if (results[6]) {
+		results[6].name = '[[admin/dashboard:remote-posts]]';
+	}
+	if (results[7]) {
+		results[7].name = '[[admin/dashboard:remote-topics]]';
+	}
+	results[8].name = '[[admin/dashboard:messages]]';
+	results = results.filter(Boolean);
+
+	({ results } = await plugins.hooks.fire('filter:admin.getStats', {
+		results,
+		helpers: { getStatsForSet, getStatsFromAnalytics },
+	}));
+
+	cache.set('admin:stats', results, 600000);
+	return results;
+}
+
+async function getStatsForSet(set, field) {
+	const terms = {
+		day: 86400000,
+		week: 604800000,
+		month: 2592000000,
+	};
+
+	const now = Date.now();
+	const results = await utils.promiseParallel({
+		yesterday: db.sortedSetCount(set, now - (terms.day * 2), '+inf'),
+		today: db.sortedSetCount(set, now - terms.day, '+inf'),
+		lastweek: db.sortedSetCount(set, now - (terms.week * 2), '+inf'),
+		thisweek: db.sortedSetCount(set, now - terms.week, '+inf'),
+		lastmonth: db.sortedSetCount(set, now - (terms.month * 2), '+inf'),
+		thismonth: db.sortedSetCount(set, now - terms.month, '+inf'),
+		alltime: getGlobalField(field),
+	});
+
+	return calculateDeltas(results);
+}
+
+async function getStatsFromAnalytics(set, field) {
+	const data = await analytics.getDailyStatsForSet(`analytics:${set}`, Date.now(), 60);
+	const sum = arr => arr.reduce((memo, cur) => memo + cur, 0);
+	const results = {
+		yesterday: sum(data.slice(-2)),
+		today: data.slice(-1)[0],
+		lastweek: sum(data.slice(-14)),
+		thisweek: sum(data.slice(-7)),
+		lastmonth: sum(data.slice(0)), // entire set
+		thismonth: sum(data.slice(-30)),
+		alltime: await getGlobalField(field),
+	};
+
+	return calculateDeltas(results);
+}
+
+function calculateDeltas(results) {
+	function textClass(num) {
+		if (num > 0) {
+			return 'text-success';
+		} else if (num < 0) {
+			return 'text-danger';
+		}
+		return 'text-warning';
+	}
+
+	function increasePercent(last, now) {
+		const percent = last ? (now - last) / last * 100 : 0;
+		return (percent > 0 ? `+` : '') + percent.toFixed(0);
+	}
+	results.yesterday -= results.today;
+	results.dayIncrease = increasePercent(results.yesterday, results.today);
+	results.dayTextClass = textClass(results.dayIncrease);
+
+	results.lastweek -= results.thisweek;
+	results.weekIncrease = increasePercent(results.lastweek, results.thisweek);
+	results.weekTextClass = textClass(results.weekIncrease);
+
+	results.lastmonth -= results.thismonth;
+	results.monthIncrease = increasePercent(results.lastmonth, results.thismonth);
+	results.monthTextClass = textClass(results.monthIncrease);
+
+	return results;
+}
+
+async function getGlobalField(field) {
+	if (!field) return 0;
+	const count = await db.getObjectField('global', field);
+	return parseInt(count, 10) || 0;
+}
+
+async function getLastRestart() {
+	const lastrestart = await db.getObject('lastrestart');
+	if (!lastrestart) {
+		return null;
+	}
+	const userData = await user.getUserData(lastrestart.uid);
+	lastrestart.user = userData;
+	lastrestart.timestampISO = utils.toISOString(lastrestart.timestamp);
+	return lastrestart;
+}
+
+async function getPopularSearches() {
+	return await db.getSortedSetRevRangeWithScores('searches:all', 0, 9);
+}
+
+dashboardController.getLogins = async (req, res) => {
+	let stats = await getStats();
+	stats = stats.filter(stat => stat.name === '[[admin/dashboard:logins]]').map(({ ...stat }) => {
+		delete stat.href;
+		return stat;
+	});
+	const summary = {
+		day: stats[0].today,
+		week: stats[0].thisweek,
+		month: stats[0].thismonth,
+	};
+
+	// List recent sessions
+	const start = Date.now() - (1000 * 60 * 60 * 24 * meta.config.loginDays);
+	const uids = await db.getSortedSetRevRangeByScore('users:online', 0, 500, '+inf', start);
+	const usersData = await user.getUsersData(uids);
+	let sessions = await Promise.all(uids.map(async (uid) => {
+		const sessions = await user.auth.getSessions(uid);
+		sessions.forEach((session) => {
+			session.user = usersData[uids.indexOf(uid)];
+		});
+
+		return sessions;
+	}));
+	sessions = _.flatten(sessions).sort((a, b) => b.datetime - a.datetime);
+
+	res.render('admin/dashboard/logins', {
+		graphTitle: '[[admin/dashboard:logins]]',
+		set: 'logins',
+		query: _.pick(req.query, ['units', 'until', 'count']),
+		stats,
+		summary,
+		sessions,
+		loginDays: meta.config.loginDays,
+	});
+};
+
+dashboardController.getUsers = async (req, res) => {
+	let stats = await getStats();
+	stats = stats.filter(stat => stat.name === '[[admin/dashboard:new-users]]').map(({ ...stat }) => {
+		delete stat.href;
+		return stat;
+	});
+	const summary = {
+		day: stats[0].today,
+		week: stats[0].thisweek,
+		month: stats[0].thismonth,
+	};
+
+	// List of users registered within time frame
+	const end = parseInt(req.query.until, 10) || Date.now();
+	const start = end - (1000 * 60 * 60 * (req.query.units === 'days' ? 24 : 1) * (req.query.count || (req.query.units === 'days' ? 30 : 24)));
+	const uids = await db.getSortedSetRevRangeByScore('users:joindate', 0, 500, '+inf', start);
+	const users = await user.getUsersData(uids);
+
+	res.render('admin/dashboard/users', {
+		graphTitle: '[[admin/dashboard:new-users]]',
+		set: 'registrations',
+		query: _.pick(req.query, ['units', 'until', 'count']),
+		stats,
+		summary,
+		users,
+	});
+};
+
+dashboardController.getTopics = async (req, res) => {
+	let stats = await getStats();
+	stats = stats.filter(stat => stat.name === '[[admin/dashboard:topics]]').map(({ ...stat }) => {
+		delete stat.href;
+		return stat;
+	});
+	const summary = {
+		day: stats[0].today,
+		week: stats[0].thisweek,
+		month: stats[0].thismonth,
+	};
+
+	// List of topics created within time frame
+	const end = parseInt(req.query.until, 10) || Date.now();
+	const start = end - (1000 * 60 * 60 * (req.query.units === 'days' ? 24 : 1) * (req.query.count || (req.query.units === 'days' ? 30 : 24)));
+	const tids = await db.getSortedSetRevRangeByScore('topics:tid', 0, 500, '+inf', start);
+	const topicData = await topics.getTopicsByTids(tids);
+
+	res.render('admin/dashboard/topics', {
+		graphTitle: '[[admin/dashboard:topics]]',
+		set: 'topics',
+		query: _.pick(req.query, ['units', 'until', 'count']),
+		stats,
+		summary,
+		topics: topicData,
+	});
+};
+
+dashboardController.getSearches = async (req, res) => {
+	const page = parseInt(req.query.page, 10) || 1;
+	const perPage = 25;
+	const start = Math.max(0, (page - 1) * perPage);
+	const stop = start + perPage - 1;
+
+	let startDate = 0;
+	let endDate = 0;
+	if (req.query.start) {
+		startDate = new Date(req.query.start);
+		startDate.setHours(24, 0, 0, 0);
+		endDate = new Date();
+		endDate.setHours(24, 0, 0, 0);
+	}
+	if (req.query.end) {
+		endDate = new Date(req.query.end);
+		endDate.setHours(24, 0, 0, 0);
+	}
+
+	let searches;
+	let itemCount;
+	if (startDate && endDate && startDate <= endDate) {
+		const daysArr = [startDate];
+		const nextDay = new Date(startDate.getTime());
+		while (nextDay < endDate) {
+			nextDay.setDate(nextDay.getDate() + 1);
+			nextDay.setHours(0, 0, 0, 0);
+			daysArr.push(new Date(nextDay.getTime()));
+		}
+
+		const daysData = await Promise.all(
+			daysArr.map(async d => db.getSortedSetRevRangeWithScores(`searches:${d.getTime()}`, 0, -1))
+		);
+
+		const map = {};
+		daysData.forEach((d) => {
+			d.forEach((search) => {
+				if (!map[search.value]) {
+					map[search.value] = search.score;
+				} else {
+					map[search.value] += search.score;
+				}
+			});
+		});
+
+		searches = Object.keys(map)
+			.map(key => ({ value: key, score: map[key] }))
+			.sort((a, b) => b.score - a.score);
+		itemCount = searches.length;
+		searches = searches.slice(start, stop + 1);
+	} else {
+		[itemCount, searches] = await Promise.all([
+			db.sortedSetCard('searches:all'),
+			db.getSortedSetRevRangeWithScores('searches:all', start, stop),
+		]);
+	}
+
+	const pageCount = Math.ceil(itemCount / perPage);
+
+	res.render('admin/dashboard/searches', {
+		searches: searches,
+		startDate: req.query.start ? req.query.start : null,
+		endDate: req.query.end ? req.query.end : null,
+		pagination: pagination.create(page, pageCount, req.query),
+	});
+};

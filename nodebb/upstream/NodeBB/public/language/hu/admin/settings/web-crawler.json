@@ -1,0 +1,11 @@
+{
+	"crawlability-settings": "Feltérképezhetőségi beállítások",
+	"robots-txt": "Egyedi Robots.txt <small>Hagyd üresen a kikapcsoláshoz</small>",
+	"sitemap-feed-settings": "Oldaltérkép és hírcsatorna beállítások",
+	"disable-rss-feeds": "RSS hírcsatorna kikapcsolása",
+	"disable-sitemap-xml": "Sitemap.xml kikapcsolása",
+	"sitemap-topics": "Oldaltérképen megjelenítendő témakörök száma",
+	"sitemap-cache-duration-hours": "Sitemap Cache Duration (hours)",
+	"clear-sitemap-cache": "Oldaltérkép gyorsítótár kiűrítése",
+	"view-sitemap": "Oldaltérkép megtekintése"
+}

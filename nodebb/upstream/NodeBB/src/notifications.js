@@ -1,0 +1,648 @@
+'use strict';
+
+
+const async = require('async');
+const winston = require('winston');
+const nconf = require('nconf');
+const _ = require('lodash');
+
+const db = require('./database');
+const User = require('./user');
+const categories = require('./categories');
+const posts = require('./posts');
+const groups = require('./groups');
+const meta = require('./meta');
+const batch = require('./batch');
+const plugins = require('./plugins');
+const utils = require('./utils');
+const emailer = require('./emailer');
+const ttlCache = require('./cache/ttl');
+const cron = require('./cron');
+const tx = require('./translator');
+
+const Notifications = module.exports;
+
+// used to delay email notifications,
+// and cancel them if the notification is already read
+let notificationCache = null;
+function getOrCreateCache() {
+	if (!notificationCache) {
+		notificationCache = ttlCache({
+			name: 'notification-email-cache',
+			max: 1000,
+			ttl: (meta.config.notificationSendDelay || 60) * 1000,
+			noDisposeOnSet: true,
+			dispose: sendEmail,
+		});
+	}
+	return notificationCache;
+}
+
+Notifications.baseTypes = [
+	'notificationType_upvote',
+	'notificationType_new-topic',
+	'notificationType_new-topic-with-tag',
+	'notificationType_new-topic-in-category',
+	'notificationType_new-reply',
+	'notificationType_post-edit',
+	'notificationType_follow',
+	'notificationType_new-chat',
+	'notificationType_new-group-chat',
+	'notificationType_new-public-chat',
+	'notificationType_group-invite',
+	'notificationType_group-leave',
+	'notificationType_group-request-membership',
+	'notificationType_new-reward',
+];
+
+Notifications.privilegedTypes = [
+	'notificationType_new-register',
+	'notificationType_post-queue',
+	'notificationType_new-post-flag',
+	'notificationType_new-user-flag',
+	'notificationType_new-message-flag',
+];
+
+const notificationPruneCutoff = 2592000000; // one month
+
+const intFields = ['datetime', 'from', 'importance', 'tid', 'pid', 'roomId', 'flagId'];
+
+Notifications.getAllNotificationTypes = async function () {
+	const results = await plugins.hooks.fire('filter:user.notificationTypes', {
+		types: Notifications.baseTypes.slice(),
+		privilegedTypes: Notifications.privilegedTypes.slice(),
+	});
+	return results.types.concat(results.privilegedTypes);
+};
+
+Notifications.startJobs = async function () {
+	winston.verbose('[notifications.init] Registering jobs.');
+	await cron.addJob({
+		name: 'notifications:prune',
+		cronTime: '*/30 * * * *',
+		onTick: Notifications.prune,
+	});
+};
+
+Notifications.get = async function (nid) {
+	const notifications = await Notifications.getMultiple([nid]);
+	return Array.isArray(notifications) && notifications.length ? notifications[0] : null;
+};
+
+Notifications.getMultiple = async function (nids) {
+	if (!Array.isArray(nids) || !nids.length) {
+		return [];
+	}
+
+	const keys = nids.map(nid => `notifications:${nid}`);
+	const notifications = await db.getObjects(keys);
+
+	const userKeys = notifications.filter(n => n && n.from).map(n => n.from);
+	let [usersData, categoriesData] = await Promise.all([
+		User.getUsersFields(userKeys, ['username', 'userslug', 'picture']),
+		categories.getCategoriesFields(userKeys, ['cid', 'name', 'slug', 'picture']),
+	]);
+	// Merge valid categoriesData into usersData
+	usersData = usersData.map((userData, idx) => {
+		const categoryData = categoriesData[idx];
+		if (!userData.uid && categoryData.cid) {
+			return {
+				username: categoryData.slug,
+				displayname: categoryData.name,
+				userslug: categoryData.slug,
+				picture: categoryData.picture,
+			};
+		}
+
+		return userData;
+	});
+	// from can be either uid or cid
+	const userMap = new Map(userKeys.map((from, index) => [String(from), usersData[index]]));
+
+	notifications.forEach((notification) => {
+		if (notification) {
+			intFields.forEach((field) => {
+				if (notification.hasOwnProperty(field)) {
+					notification[field] = utils.isNumber(notification[field]) ?
+						parseInt(notification[field], 10) || 0 :
+						notification[field];
+				}
+			});
+			if (notification.path && !notification.path.startsWith('http')) {
+				notification.path = nconf.get('relative_path') + notification.path;
+			}
+			notification.datetimeISO = utils.toISOString(notification.datetime);
+
+			if (notification.bodyLong) {
+				notification.bodyLong = utils.stripHTMLTags(notification.bodyLong, ['img', 'p', 'a']);
+			}
+			const fromUser = userMap.get(String(notification.from));
+			if (fromUser !== undefined) {
+				notification.user = fromUser;
+			}
+			if (notification.user && notification.from) {
+				notification.image = notification.user.picture || null;
+				if (notification.user.username === '[[global:guest]]') {
+					notification.bodyShort = notification.bodyShort.replace(/([\s\S]*?),[\s\S]*?,([\s\S]*?)/, '$1, [[global:guest]], $2');
+				}
+			} else if (notification.image === 'brand:logo' || !notification.image) {
+				notification.image = meta.config['brand:logo'] ?
+					utils.cacheBustedUrl(meta.config['brand:logo'], meta.config['brand:logo:updatedAt']) :
+					`${nconf.get('relative_path')}/assets/logo.png`;
+			}
+		}
+	});
+	return notifications;
+};
+
+Notifications.filterExists = async function (nids) {
+	const exists = await db.isSortedSetMembers('notifications', nids);
+	return nids.filter((nid, idx) => exists[idx]);
+};
+
+Notifications.findRelated = async function (mergeIds, set) {
+	mergeIds = mergeIds.filter(Boolean);
+	if (!mergeIds.length) {
+		return [];
+	}
+	// A related notification is one in a zset that has the same mergeId
+	const nids = await db.getSortedSetMembers(set);
+
+	const keys = nids.map(nid => `notifications:${nid}`);
+	const notificationData = await db.getObjectsFields(keys, ['mergeId']);
+	const notificationMergeIds = notificationData.map(notifObj => String(notifObj.mergeId));
+	const mergeSet = new Set(mergeIds.map(id => String(id)));
+	return nids.filter((nid, idx) => mergeSet.has(notificationMergeIds[idx]));
+};
+
+Notifications.create = async function (data) {
+	if (!data.nid) {
+		throw new Error('[[error:no-notification-id]]');
+	}
+	data.importance = data.importance || 5;
+	const oldNotif = await db.getObject(`notifications:${data.nid}`);
+	if (
+		oldNotif &&
+		String(oldNotif.pid, 10) === String(data.pid, 10) &&
+		parseInt(oldNotif.importance, 10) > parseInt(data.importance, 10)
+	) {
+		return null;
+	}
+	const now = Date.now();
+	data.datetime = now;
+	const result = await plugins.hooks.fire('filter:notifications.create', {
+		data: data,
+	});
+	if (!result.data) {
+		return null;
+	}
+	if (data.bodyShort) {
+		data.bodyShort = utils.stripBidiControls(data.bodyShort);
+	}
+	if (data.bodyLong && tx.isTranslationKey(data.bodyLong)) {
+		data.txBodyLong = 1;
+	}
+	await Promise.all([
+		db.sortedSetAdd('notifications', now, data.nid),
+		db.setObject(`notifications:${data.nid}`, data),
+	]);
+	return data;
+};
+
+Notifications.push = async function (notification, uids) {
+	if (!notification || !notification.nid) {
+		return;
+	}
+	uids = Array.isArray(uids) ? _.uniq(uids) : [uids];
+	if (!uids.length) {
+		return;
+	}
+
+	setTimeout(() => {
+		batch.processArray(uids, async (uids) => {
+			await pushToUids(uids, notification);
+		}, { interval: 1000, batch: 500 }, (err) => {
+			if (err) {
+				winston.error(err.stack);
+			}
+		});
+	}, 500);
+};
+
+async function pushToUids(uids, notification) {
+	async function sendNotification(uids) {
+		if (!uids.length) {
+			return;
+		}
+		const cutoff = Date.now() - notificationPruneCutoff;
+		const unreadKeys = uids.map(uid => `uid:${uid}:notifications:unread`);
+		const readKeys = uids.map(uid => `uid:${uid}:notifications:read`);
+		await Promise.all([
+			db.sortedSetsAdd(unreadKeys, notification.datetime, notification.nid),
+			db.sortedSetsRemove(readKeys, notification.nid),
+		]);
+		await db.sortedSetsRemoveRangeByScore(unreadKeys.concat(readKeys), '-inf', cutoff);
+		const websockets = require('./socket.io');
+		if (websockets.server) {
+			await Promise.all(uids.map(async (uid) => {
+				await plugins.hooks.fire('filter:sockets.sendNewNoticationToUid', {
+					uid,
+					notification,
+				});
+				const uidsInRoom = await websockets.getUidsInRoom(`uid_${uid}`);
+				let unreadCount;
+				if (uidsInRoom.length) {
+					// only calculate the unread count for users connected right now
+					unreadCount = await User.notifications.getUnreadCount(uid);
+				}
+				websockets.in(`uid_${uid}`).emit('event:new_notification', { notification, unreadCount });
+			}));
+		}
+	}
+
+	async function getUidsBySettings(uids) {
+		const uidsToNotify = [];
+		const uidsToEmail = [];
+		const usersSettings = await User.getMultipleUserSettings(uids);
+		usersSettings.forEach((userSettings) => {
+			const setting = userSettings[`notificationType_${notification.type}`] || 'notification';
+
+			if (setting === 'notification' || setting === 'notificationemail') {
+				uidsToNotify.push(userSettings.uid);
+			}
+
+			if (!meta.config.disableNotificationEmails && (setting === 'email' || setting === 'notificationemail')) {
+				uidsToEmail.push(userSettings.uid);
+			}
+		});
+		return { uidsToNotify, uidsToEmail };
+	}
+
+	// Remove uid from recipients list if they have blocked the user triggering the notification
+	uids = await User.blocks.filterUids(notification.from, uids);
+	const data = await plugins.hooks.fire('filter:notification.push', {
+		notification,
+		uids,
+	});
+	if (!data || !data.notification || !data.uids || !data.uids.length) {
+		return;
+	}
+
+	notification = data.notification;
+	let results = { uidsToNotify: data.uids, uidsToEmail: [] };
+	if (notification.type) {
+		results = await getUidsBySettings(data.uids);
+	}
+
+	await sendNotification(results.uidsToNotify);
+
+	if (results.uidsToEmail.length) {
+		const delayNotificationTypes = ['new-chat', 'new-group-chat', 'new-public-chat'];
+		const delayCache = getOrCreateCache();
+		if (delayNotificationTypes.includes(notification.type)) {
+			const cacheKey = `${notification.mergeId}|${results.uidsToEmail.join(',')}`;
+			const payload = delayCache.get(cacheKey);
+			let { bodyLong } = notification;
+			if (payload !== undefined) {
+				bodyLong = [payload.notification.bodyLong, bodyLong].join('\n');
+			}
+			delayCache.set(cacheKey, { uids: results.uidsToEmail, notification: { ...notification, bodyLong } });
+			if (notification.bodyLong.length >= 1000) {
+				delayCache.delete(cacheKey);
+			}
+		} else {
+			delayCache.set(`delayed:nid:${notification.nid}`, {
+				uids: results.uidsToEmail,
+				notification,
+			});
+		}
+	}
+
+	plugins.hooks.fire('action:notification.pushed', {
+		notification,
+		uids: results.uidsToNotify,
+		uidsNotified: results.uidsToNotify,
+		uidsEmailed: results.uidsToEmail,
+	});
+}
+
+async function sendEmail({ uids, notification }, cacheKey, reason) {
+	if ((reason && reason === 'set') || !uids.length) {
+		return;
+	}
+
+	// check if notification already read by users
+	// if so don't send email, https://github.com/NodeBB/NodeBB/issues/5867
+	const hasRead = await db.isMemberOfSortedSets(
+		uids.map(uid => `uid:${uid}:notifications:read`),
+		notification.nid
+	);
+	uids = uids.filter((uid, index) => !hasRead[index]);
+	if (!uids.length) {
+		return;
+	}
+
+	// Update CTA messaging (as not all notification types need custom text)
+	if (['new-reply', 'new-chat'].includes(notification.type)) {
+		notification['cta-type'] = notification.type;
+	}
+	let body = notification.bodyLong || '';
+	if (meta.config.removeEmailNotificationImages) {
+		body = body.replace(/<img[^>]*>/, '');
+	}
+	body = posts.relativeToAbsolute(body, posts.urlRegex);
+	body = posts.relativeToAbsolute(body, posts.imgRegex);
+	let errorLogged = false;
+	await async.eachLimit(uids, 3, async (uid) => {
+		await emailer.send('notification', uid, {
+			path: notification.path,
+			notification_url: notification.path.startsWith('http') ? notification.path : nconf.get('url') + notification.path,
+			subject: utils.stripHTMLTags(notification.subject || '[[notifications:new-notification]]'),
+			intro: utils.stripHTMLTags(notification.bodyShort),
+			body: body,
+			notification: notification,
+			showUnsubscribe: true,
+		}).catch((err) => {
+			if (!errorLogged) {
+				winston.error(`[emailer.send] ${err.stack}`);
+				errorLogged = true;
+			}
+		});
+	});
+}
+
+Notifications.pushGroup = async function (notification, groupName) {
+	if (!notification) {
+		return;
+	}
+	const members = await groups.getMembers(groupName, 0, -1);
+	await Notifications.push(notification, members);
+};
+
+Notifications.pushGroups = async function (notification, groupNames) {
+	if (!notification) {
+		return;
+	}
+	let groupMembers = await groups.getMembersOfGroups(groupNames);
+	groupMembers = _.uniq(_.flatten(groupMembers));
+	await Notifications.push(notification, groupMembers);
+};
+
+Notifications.rescind = async function (nids) {
+	nids = Array.isArray(nids) ? nids : [nids];
+	nids = await Notifications.filterExists(nids);
+	if (!nids.length) {
+		return;
+	}
+	await plugins.hooks.fire('static:notifications.rescind', { nids });
+	await Promise.all([
+		db.sortedSetRemove('notifications', nids),
+		db.deleteAll(nids.map(nid => `notifications:${nid}`)),
+	]);
+	plugins.hooks.fire('action:notifications.rescind', { nids });
+};
+
+Notifications.markRead = async function (nid, uid) {
+	if (parseInt(uid, 10) <= 0 || !nid) {
+		return;
+	}
+	await Notifications.markReadMultiple([nid], uid);
+};
+
+Notifications.markUnread = async function (nid, uid) {
+	if (!(parseInt(uid, 10) > 0) || !nid) {
+		return;
+	}
+	const [notification, [userOwns]] = await Promise.all([
+		db.getObject(`notifications:${nid}`),
+		User.notifications.ownsNids([nid], uid),
+	]);
+	if (!notification || !userOwns) {
+		return;
+	}
+
+	const timestamp = notification.datetime || Date.now();
+
+	await Promise.all([
+		db.sortedSetRemove(`uid:${uid}:notifications:read`, nid),
+		db.sortedSetAdd(`uid:${uid}:notifications:unread`, timestamp, nid),
+	]);
+};
+
+Notifications.markReadMultiple = async function (nids, uid) {
+	nids = nids.filter(Boolean);
+	if (!Array.isArray(nids) || !nids.length || !(parseInt(uid, 10) > 0)) {
+		return;
+	}
+	const userOwns = await User.notifications.ownsNids(nids, uid);
+	nids = nids.filter((nid, index) => userOwns[index]);
+	let mergeIds = await db.getObjectsFields(
+		nids.map(nid => `notifications:${nid}`),
+		['mergeId']
+	);
+	// Isolate mergeIds and find related notifications
+	mergeIds = _.uniq(mergeIds.map(set => set.mergeId));
+
+	const relatedNids = await Notifications.findRelated(mergeIds, `uid:${uid}:notifications:unread`);
+
+	let notificationData = await db.getObjectsFields(
+		_.union(nids, relatedNids).map(nid => `notifications:${nid}`),
+		['nid', 'datetime']
+	);
+	notificationData = notificationData.filter(n => n && n.nid);
+
+	nids = notificationData.map(n => n.nid);
+	const datetimes = notificationData.map(n => (n && n.datetime) || Date.now());
+	await Promise.all([
+		db.sortedSetRemove(`uid:${uid}:notifications:unread`, nids),
+		db.sortedSetAdd(`uid:${uid}:notifications:read`, datetimes, nids),
+	]);
+};
+
+Notifications.markAllRead = async function (uid, filter = '') {
+	await batch.processSortedSet(`uid:${uid}:notifications:unread`, async (unreadNotifs) => {
+		let nids = unreadNotifs.map(n => n && n.value);
+		let datetimes = unreadNotifs.map(n => n && n.score);
+		if (filter !== '') {
+			const notificationKeys = nids.map(nid => `notifications:${nid}`);
+			let notificationData = await db.getObjectsFields(notificationKeys, ['nid', 'type', 'datetime']);
+			notificationData = notificationData.filter(n => n && n.nid && n.type === filter);
+			if (!notificationData.length) {
+				return;
+			}
+			nids = notificationData.map(n => n.nid);
+			datetimes = notificationData.map(n => n.datetime || Date.now());
+		}
+		await Promise.all([
+			db.sortedSetRemove(`uid:${uid}:notifications:unread`, nids),
+			db.sortedSetAdd(`uid:${uid}:notifications:read`, datetimes, nids),
+		]);
+	}, {
+		withScores: true,
+		batch: 500,
+	});
+};
+
+Notifications.prune = async function () {
+	const cutoffTime = Date.now() - notificationPruneCutoff;
+	const nids = await db.getSortedSetRangeByScore('notifications', 0, 500, '-inf', cutoffTime);
+	if (!nids.length) {
+		return;
+	}
+	try {
+		await Promise.all([
+			db.sortedSetRemove('notifications', nids),
+			db.deleteAll(nids.map(nid => `notifications:${nid}`)),
+		]);
+
+		await batch.processSortedSet('users:joindate', async (uids) => {
+			const unread = uids.map(uid => `uid:${uid}:notifications:unread`);
+			const read = uids.map(uid => `uid:${uid}:notifications:read`);
+			await db.sortedSetsRemoveRangeByScore(unread.concat(read), '-inf', cutoffTime);
+		}, { batch: 500, interval: 100 });
+	} catch (err) {
+		if (err) {
+			winston.error(`Encountered error pruning notifications\n${err.stack}`);
+		}
+	}
+};
+
+Notifications.merge = async function (notifications) {
+	// When passed a set of notification objects, merge any that can be merged
+	const { mergeIds } = await plugins.hooks.fire('filter:notifications.mergeIds', {
+		mergeIds: [
+			'notifications:upvoted-your-post-in',
+			'notifications:user-started-following-you',
+			'notifications:user-posted-to',
+			'notifications:user-flagged-post-in',
+			'notifications:user-flagged-user',
+			'notifications:user-flagged-message',
+			'new-chat',
+			'notifications:user-posted-in-public-room',
+			'new-register',
+			'post-queue',
+			'notifications:activitypub.announce',
+		],
+	});
+
+	notifications = mergeIds.reduce((notifications, mergeId) => {
+		const isolated = notifications.filter(n => n && n.hasOwnProperty('mergeId') && n.mergeId.split('|')[0] === mergeId);
+		if (isolated.length <= 1) {
+			return notifications; // Nothing to merge
+		}
+
+		// Each isolated mergeId may have multiple differentiators, so process each separately
+		const differentiators = isolated.reduce((cur, next) => {
+			const differentiator = next.mergeId.split('|')[1] || 0;
+			if (!cur.includes(differentiator)) {
+				cur.push(differentiator);
+			}
+
+			return cur;
+		}, []);
+
+		differentiators.forEach((differentiator) => {
+			const target = differentiator === 0 ? mergeId : `${mergeId}|${differentiator}`;
+			const set = isolated.filter(n => n.mergeId === target);
+
+			const modifyIndex = notifications.indexOf(set[0]);
+			if (modifyIndex === -1 || set.length === 1) {
+				return notifications;
+			}
+			const notifObj = notifications[modifyIndex];
+			notifObj.mergeCount = set.length;
+			switch (mergeId) {
+				case 'new-chat': {
+					const { roomId, roomName, type, user } = set[0];
+					const isGroupChat = type === 'new-group-chat';
+					notifObj.bodyShort = isGroupChat || (roomName !== `[[modules:chat.room-id, ${roomId}]]`) ?
+						tx.compile('notifications:new-messages-in', set.length, tx.escape(roomName)) :
+						tx.compile('notifications:new-messages-from', set.length, tx.escape(user.displayname));
+					break;
+				}
+
+				case 'notifications:user-flagged-message': {
+					buildMergedNotif(mergeId, notifObj, set, [
+						tx.escape(notifObj.roomName),
+					]);
+					break;
+				}
+
+				case 'notifications:user-posted-in-public-room': {
+					buildMergedNotif(mergeId, notifObj, set, [
+						notifObj.roomIcon, tx.escape(notifObj.roomName),
+					]);
+					break;
+				}
+				case 'notifications:user-flagged-user': {
+					buildMergedNotif(mergeId, notifObj, set, [
+						tx.escape(notifObj.targetDisplayname),
+					]);
+					break;
+				}
+				case 'notifications:upvoted-your-post-in':
+				case 'notifications:user-started-following-you':
+				case 'notifications:user-posted-to':
+				case 'notifications:user-flagged-post-in':
+				case 'notifications:activitypub.announce': {
+					buildMergedNotif(mergeId, notifObj, set, [
+						tx.escape(notifObj.topicTitle),
+					]);
+					break;
+				}
+
+				case 'new-register':
+				case 'post-queue':
+					notifObj.bodyShort = `[[notifications:${mergeId}-multiple, ${set.length}]]`;
+					break;
+
+				default:
+					notifObj.bodyShort = `[[notifications:merged-notifications, ${set.length}]]`;
+					break;
+			}
+
+			// Filter out duplicates
+			notifications = notifications.filter((notifObj, idx) => {
+				if (!notifObj || !notifObj.mergeId) {
+					return true;
+				}
+
+				return !(notifObj.mergeId === target && idx !== modifyIndex);
+			});
+		});
+
+		return notifications;
+	}, notifications);
+
+	const data = await plugins.hooks.fire('filter:notifications.merge', {
+		notifications: notifications,
+	});
+	return data && data.notifications;
+};
+
+function buildMergedNotif(mergeId, notifObj, notifObjsToMerge, args) {
+	const usernames = _.uniq(notifObjsToMerge.map(n => tx.escape(n?.user?.displayname))).filter(Boolean);
+	const type = typeFromLength(usernames);
+	const isMultiple = type === 'multiple';
+	const txArgs = [
+		`${mergeId}${type ? `-${type}` : ''}`,
+		...usernames.slice(0, usernames.length <= 3 ? 3 : 2),
+		...(isMultiple ? [usernames.length - 2] : []),
+		...args,
+	];
+	notifObj.bodyShort = tx.compile(...txArgs);
+	notifObj.path = notifObjsToMerge[notifObjsToMerge.length - 1].path;
+}
+
+function typeFromLength(items) {
+	if (items.length <= 1) {
+		return '';
+	} else if (items.length === 2) {
+		return 'dual';
+	} else if (items.length === 3) {
+		return 'triple';
+	}
+	return 'multiple';
+}
+
+require('./promisify')(Notifications);

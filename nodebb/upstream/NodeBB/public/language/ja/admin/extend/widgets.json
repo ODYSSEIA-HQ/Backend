@@ -1,0 +1,37 @@
+{
+	"widgets": "ウィジェット",
+	"available": "利用可能なウィジェット",
+	"explanation": "ドロップダウンメニューからウィジェットを選択し、左のテンプレートのウィジェットエリアにドラッグ&ドロップします。",
+	"none-installed": "ウィジェットが見つかりません！<a href=\"%1\">プラグイン</a>コントロールパネルでウィジェットエッセンシャルプラグインを有効にしてください。",
+	"clone-from": "ウィジェットを複製元",
+	"containers.available": "利用可能なコンテナ",
+	"containers.explanation": "任意のウィジェットの上にドラッグ&ドロップ",
+	"containers.none": "なし",
+	"container.well": "ウェル",
+	"container.jumbotron": "ジャンボトロン",
+	"container.card": "カード",
+	"container.card-header": "カードヘッダー",
+	"container.card-body": "カード本文",
+	"container.title": "タイトル",
+	"container.body": "本文",
+	"container.alert": "警告",
+
+	"alert.confirm-delete": "このウィジェットを削除してもよろしいですか？",
+	"alert.updated": "ウィジェットが更新されました。",
+	"alert.update-success": "ウィジェットを保存しました",
+	"alert.clone-success": "ウィジェットを正常に複製しました",
+
+	"error.select-clone": "複製元のページを選択してください",
+
+	"title": "タイトル",
+	"title.placeholder": "タイトル（一部のコンテナでのみ表示）",
+	"container": "コンテナ",
+	"container.placeholder": "コンテナをドラッグ&ドロップするか、ここにHTMLを入力してください。",
+	"show-to-groups": "表示するグループ",
+	"hide-from-groups": "非表示にするグループ",
+	"start-date": "開始日",
+	"end-date": "終了日",
+	"hide-on-mobile": "モバイルで非表示",
+	"hide-drafts": "下書きを非表示",
+	"show-drafts": "下書きを表示"
+}

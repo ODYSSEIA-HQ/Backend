@@ -1,0 +1,15 @@
+{
+    "tag": "Etiket-indstillinger",
+    "link-to-manage": "Håndtér Etiketter",
+    "system-tags": "System-etiketter",
+    "system-tags-help": "Kun priviligerede brugere kan se disse etiketter.",
+    "tags-per-topic": "Etiketter per tråd",
+    "min-per-topic": "Minimalt Antal Etiketter per Tråd",
+    "max-per-topic": "Maksimalt Antal Etiketter per Tråd",
+    "min-length": "Minimal Etiket-længde",
+    "max-length": "Maksimal Etiket-længde",
+    "case-sensitive": "Case-Sensitive Tags",
+    "case-sensitive-help": "When enabled, tags will be case-sensitive (#NodeBB and #nodebb will be treated as different tags). When disabled, tags are normalized to lowercase.",
+    "related-topics": "Related Topics",
+    "max-related-topics": "Maximum related topics to display (if supported by theme)"
+}

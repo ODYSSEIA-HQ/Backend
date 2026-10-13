@@ -1,0 +1,18 @@
+{
+	"skins": "スキン",
+	"bootswatch-skins": "Bootswatchスキン",
+	"custom-skins": "カスタムスキン",
+	"add-skin": "スキンを追加",
+	"save-custom-skins": "カスタムスキンを保存",
+	"save-custom-skins-success": "カスタムスキンを正常に保存しました",
+	"custom-skin-name": "カスタムスキン名",
+	"custom-skin-variables": "カスタムスキン変数",
+	"loading": "スキンを読み込んでいます...",
+	"homepage": "ホームページ",
+	"select-skin": "スキン選択",
+	"revert-skin": "スキンを元に戻す",
+	"current-skin": "現在のスキン",
+	"skin-updated": "スキンがアップデートされました",
+	"applied-success": "スキン %1 が正常に適用されました",
+	"revert-success": "スキンがベースカラーに戻りました"
+}

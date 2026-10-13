@@ -1,0 +1,159 @@
+get:
+  tags:
+    - posts
+  summary: get a post
+  description: This operation retrieves a post's data
+  parameters:
+    - in: path
+      name: pid
+      schema:
+        type: string
+      required: true
+      description: a valid post id
+      example: 1
+  responses:
+    '200':
+      description: Post successfully retrieved
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              status:
+                $ref: ../../components/schemas/Status.yaml#/Status
+              response:
+                allOf:
+                  - type: object
+                    properties:
+                      pid:
+                        type: number
+                      uid:
+                        type: number
+                        description: A user identifier
+                      tid:
+                        type: number
+                        description: A topic identifier
+                      content:
+                        type: string
+                      timestamp:
+                        type: number
+                      flagId:
+                        type: number
+                      deleted:
+                        type: number
+                      upvotes:
+                        type: number
+                      downvotes:
+                        type: number
+                      deleterUid:
+                        type: number
+                      edited:
+                        type: number
+                      replies:
+                        type: number
+                      bookmarks:
+                        type: number
+                      votes:
+                        type: number
+                      timestampISO:
+                        type: string
+                        description: An ISO 8601 formatted date string (complementing `timestamp`)
+                      editedISO:
+                        type: string
+                        description: An ISO 8601 formatted date string (complementing `timestamp`)
+                      upvoted:
+                        type: boolean
+                      downvoted:
+                        type: boolean
+                      attachments:
+                        type: array
+                        items:
+                          type: string
+                          description: A sha256 hash of the attachment (tied to the corresponding entry in the database)
+                  - type: object
+                    description: Optional properties that may or may not be present (except for `pid`, which is always present, and is only here as a hack to pass validation)
+                    properties:
+                      pid:
+                        type: number
+                        description: A post identifier
+                      sourceContent:
+                        type: string
+                        nullable: true
+                        description: The markdown equivalent of a remote post content, as received (or fetched) from the remote site.
+                    required:
+                      - pid
+put:
+  tags:
+    - posts
+  summary: edit a post
+  description: This operation edits a post
+  parameters:
+    - in: path
+      name: pid
+      schema:
+        type: string
+      required: true
+      description: a valid post id
+      example: 1
+  requestBody:
+    required: true
+    content:
+      application/json:
+        schema:
+          type: object
+          properties:
+            content:
+              type: string
+              description: New post content
+              example: New post content
+            title:
+              type: string
+              description: Topic title, only accepted for main posts
+              example: New title
+          required:
+            - content
+  responses:
+    '200':
+      description: Post successfully edited
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              status:
+                $ref: ../../components/schemas/Status.yaml#/Status
+              response:
+                allOf:
+                  - $ref: ../../components/schemas/PostObject.yaml#/PostObject
+                  - type: object
+                    properties:
+                      edited:
+                        type: number
+                      deleterUid:
+                        type: number
+delete:
+  tags:
+    - posts
+  summary: purge a post
+  description: This operation purges a post.
+  parameters:
+    - in: path
+      name: pid
+      schema:
+        type: string
+      required: true
+      description: a valid post id
+      example: 1
+  responses:
+    '200':
+      description: Post successfully purged
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              status:
+                $ref: ../../components/schemas/Status.yaml#/Status
+              response:
+                type: object
+                properties: {}

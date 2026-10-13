@@ -1,0 +1,28 @@
+{
+	"alert.confirm-rebuild-and-restart": "کیا آپ واقعی نوڈ بی بی کو دوبارہ بنانا اور ری اسٹارٹ کرنا چاہتے ہیں؟",
+	"alert.confirm-restart": "کیا آپ واقعی نوڈ بی بی کو ری اسٹارٹ کرنا چاہتے ہیں؟",
+	"rebuilding.title": "Rebuilding... <i class=\"fa fa-spin fa-refresh\"></i>",
+	"rebuilding.message": "NodeBB is rebuilding front-end assets (css, javascript, etc).",
+	"rebuildrestart.success.title": "<i class=\"fa fa-check\"></i> Success",
+	"rebuilding.success.message": "NodeBB has rebuilt and restarted successfully.",
+	"build.complete": "Build Complete!... <i class=\"fa fa-spin fa-refresh\"></i>",
+
+	"restarting.title": "Restarting... <i class=\"fa fa-spin fa-refresh\"></i>",
+	"restarting.message": "NodeBB is restarting.",
+	"restarting.success.message": "NodeBB has restarted successfully.",
+
+
+	"acp-title": "%1 | نوڈ بی بی ایڈمنسٹریٹر کنٹرول پینل",
+	"settings-header-contents": "مواد",
+	"changes-saved": "تبدیلیاں محفوظ ہو گئیں",
+	"changes-saved-message": "آپ کی نوڈ بی بی کی ترتیبات میں تبدیلیاں محفوظ ہو گئیں۔",
+	"changes-not-saved": "تبدیلیاں محفوظ نہیں ہوئیں",
+	"changes-not-saved-message": "نوڈ بی بی میں آپ کی تبدیلیاں محفوظ کرنے میں ایک مسئلہ پیش آیا۔ (%1)",
+	"save-changes": "تبدیلیاں محفوظ کریں",
+	"min": "کم سے کم:",
+	"max": "زیادہ سے زیادہ:",
+	"view": "دیکھیں",
+	"edit": "ترمیم",
+	"add": "شامل کریں",
+	"select-icon": "آئیکن منتخب کریں"
+}

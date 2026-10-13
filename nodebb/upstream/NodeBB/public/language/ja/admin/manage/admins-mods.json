@@ -1,0 +1,14 @@
+{
+    "manage-admins-and-mods": "管理者とモデレーターを管理",
+    "administrators": "管理者",
+    "global-moderators": "グローバルモデレーター",
+    "moderators": "モデレーター",
+    "no-global-moderators": "グローバルモデレーターがいません",
+    "no-sub-categories": "サブカテゴリがありません",
+    "view-children": "子を表示（%1）",
+    "no-moderators": "モデレーターがいません",
+    "add-administrator": "管理者を追加",
+    "add-global-moderator": "グローバルモデレーターを追加",
+    "add-moderator": "モデレーターを追加",
+    "disabled": "無効"
+}

@@ -1,0 +1,31 @@
+get:
+  tags:
+    - admin
+  summary: Get system cache info
+  parameters:
+    - in: query
+      name: name
+      schema:
+        type: string
+        enum: ['post', 'object', 'group', 'local']
+      required: false
+      description: Specify cache to dump if calling `/dump`
+      example: 'post'
+  responses:
+    "200":
+      description: System cache information
+      content:
+        application/json:
+          schema:
+            type: object
+            description: The type of response is dependent on the database used. Please examine the output.
+            properties:
+              cache:
+                type: array
+                description: Dump of the underlying LRU/TTL cache contents (array of key/entry tuples)
+                items: {}
+              invalidationVersions:
+                type: array
+                description: Dump of cache invalidation version tracking (array of key/entry tuples)
+                items: {}
+            additionalProperties: true

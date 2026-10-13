@@ -1,0 +1,479 @@
+'use strict';
+
+const rss = require('rss');
+const nconf = require('nconf');
+
+const posts = require('../posts');
+const topics = require('../topics');
+const user = require('../user');
+const categories = require('../categories');
+const meta = require('../meta');
+const controllerHelpers = require('../controllers/helpers');
+const privileges = require('../privileges');
+const db = require('../database');
+const utils = require('../utils');
+const controllers404 = require('../controllers/404');
+const clientIp = require('../ip');
+const ratelimit = require('../ratelimit');
+const routeHelpers = require('./helpers');
+
+const { terms } = controllerHelpers;
+
+const RSS_TOKEN_RATE_LIMIT_WINDOW = 3600000; // one hour
+const RSS_TOKEN_RATE_LIMIT_MAX = 5;
+
+module.exports = function (app, middleware) {
+	function handle404(req, res, next) {
+		if (meta.config['feeds:disableRSS']) {
+			return controllers404.handle404(req, res);
+		}
+		next();
+	}
+	const middlewares = [handle404, middleware.maintenanceMode];
+	app.get('/topic/:topic_id.rss', middlewares, routeHelpers.tryRoute(generateForTopic));
+	app.get('/category/:category_id.rss', middlewares, routeHelpers.tryRoute(generateForCategory));
+	app.get('/topics.rss', middlewares, routeHelpers.tryRoute(generateForTopics));
+	app.get('/recent.rss', middlewares, routeHelpers.tryRoute(generateForRecent));
+	app.get('/top.rss', middlewares, routeHelpers.tryRoute(generateForTop));
+	app.get('/top/:term.rss', middlewares, routeHelpers.tryRoute(generateForTop));
+	app.get('/popular.rss', middlewares, routeHelpers.tryRoute(generateForPopular));
+	app.get('/popular/:term.rss', middlewares, routeHelpers.tryRoute(generateForPopular));
+	app.get('/recentposts.rss', middlewares, routeHelpers.tryRoute(generateForRecentPosts));
+	app.get('/category/:category_id/recentposts.rss', middlewares, routeHelpers.tryRoute(generateForCategoryRecentPosts));
+	app.get('/user/:userslug/topics.rss', middlewares, routeHelpers.tryRoute(generateForUserTopics));
+	app.get('/tags/:tag.rss', middlewares, routeHelpers.tryRoute(generateForTag));
+};
+
+function stripUnicodeControlChars(str) {
+	// eslint-disable-next-line no-control-regex
+	return str.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '');
+}
+
+async function generateForTopic(req, res, next) {
+	const tid = req.params.topic_id;
+	const { uid, ok } = await getUidFromToken(req, res);
+	if (!ok) {
+		return;
+	}
+	const [userPrivileges, canRead, topic] = await Promise.all([
+		privileges.topics.get(tid, uid),
+		privileges.topics.canRead(tid, uid),
+		topics.getTopicData(tid),
+	]);
+
+	if (userPrivileges.disabled || !privileges.topics.canViewDeletedScheduled(topic, userPrivileges)) {
+		return next();
+	}
+
+	if (!canRead) {
+		return next();
+	}
+
+	const topicData = await topics.getTopicWithPosts(topic, `tid:${tid}:posts`, uid, 0, 24, true);
+
+	const mainPost = topicData.posts[0];
+	topics.modifyPostsByPrivilege(topicData, userPrivileges);
+	const title = stripUnicodeControlChars(topicData.title);
+	const feed = new rss({
+		title: utils.stripHTMLTags(title, utils.tags),
+		description: topicData.posts.length ? stripUnicodeControlChars(mainPost.content) : '',
+		feed_url: `${nconf.get('url')}/topic/${tid}.rss`,
+		site_url: `${nconf.get('url')}/topic/${topicData.slug}`,
+		image_url: topicData.posts.length ? mainPost.picture : '',
+		author: topicData.posts.length ? mainPost.username : '',
+		ttl: 60,
+	});
+
+	if (topicData.posts.length > 0) {
+		feed.pubDate = new Date(parseInt(mainPost.timestamp, 10)).toUTCString();
+	}
+	const replies = topicData.posts.slice(1);
+	replies.forEach((postData) => {
+		if (!postData.deleted) {
+			const dateStamp = new Date(
+				parseInt(parseInt(postData.edited, 10) === 0 ? postData.timestamp : postData.edited, 10)
+			).toUTCString();
+
+			feed.item({
+				title: `Reply to ${utils.stripHTMLTags(title, utils.tags)} on ${dateStamp}`,
+				description: stripUnicodeControlChars(postData.content),
+				url: `${nconf.get('url')}/post/${postData.pid}`,
+				author: postData.user ? postData.user.username : '',
+				date: dateStamp,
+			});
+		}
+	});
+
+	sendFeed(feed, res);
+}
+
+async function generateForCategory(req, res, next) {
+	const cid = req.params.category_id;
+	const { uid, ok } = await getUidFromToken(req, res);
+	if (!ok) {
+		return;
+	}
+	async function getRecentlyCreatedTids() {
+		const [pinnedTids, tids] = await Promise.all([
+			db.getSortedSetRevRange(`cid:${cid}:tids:pinned`, 0, -1),
+			db.getSortedSetRevRange(`cid:${cid}:tids:create`, 0, 24),
+		]);
+		const allTids = Array.from(new Set([...pinnedTids, ...tids]));
+		const topicData = await topics.getTopicsFields(allTids, ['tid', 'timestamp']);
+		topicData.sort((a, b) => b.timestamp - a.timestamp);
+		return topicData.slice(0, 25).map(t => t.tid);
+	}
+	const [userPrivileges, category, tids] = await Promise.all([
+		privileges.categories.get(cid, uid),
+		categories.getCategoryData(cid),
+		getRecentlyCreatedTids(),
+	]);
+
+	if (!category || category.disabled) {
+		return next();
+	}
+
+	if (!userPrivileges.read) {
+		return next();
+	}
+
+	let topicsData = await topics.getTopicsByTids(tids, uid);
+	topicsData = await user.blocks.filter(uid, topicsData);
+	const feed = await generateTopicsFeed({
+		uid: uid,
+		title: category.name,
+		description: category.description,
+		feed_url: `/category/${cid}.rss`,
+		site_url: `/category/${category.cid}`,
+	}, topicsData, 'timestamp');
+
+	sendFeed(feed, res);
+}
+
+async function generateForTopics(req, res) {
+	const { uid, ok } = await getUidFromToken(req, res);
+	if (!ok) {
+		return;
+	}
+	let cids = await categories.getCidsByPrivilege('categories:cid', uid, 'topics:read');
+	cids = cids.filter(cid => cid !== -1);
+
+	const topicData = await topics.getSortedTopics({
+		cids,
+		uid: uid,
+		sort: 'create',
+		start: 0,
+		stop: 19,
+	});
+
+	const feed = await generateTopicsFeed({
+		title: 'Most recently created topics',
+		description: 'A list of topics that have been created recently',
+		feed_url: '/topics.rss',
+		useMainPost: true,
+	}, topicData.topics, 'timestamp');
+	sendFeed(feed, res);
+}
+
+async function generateForRecent(req, res, next) {
+	await generateSorted({
+		title: 'Recently Active Topics',
+		description: 'A list of topics that have been active within the past 24 hours',
+		feed_url: '/recent.rss',
+		site_url: '/recent',
+		sort: 'recent',
+		timestampField: 'lastposttime',
+		term: 'alltime',
+	}, req, res, next);
+}
+
+async function generateForTop(req, res, next) {
+	await generateSorted({
+		title: 'Top Voted Topics',
+		description: 'A list of topics that have received the most votes',
+		feed_url: `/top/${req.params.term || 'daily'}.rss`,
+		site_url: `/top/${req.params.term || 'daily'}`,
+		sort: 'votes',
+		timestampField: 'timestamp',
+		term: 'daily',
+	}, req, res, next);
+}
+
+async function generateForPopular(req, res, next) {
+	await generateSorted({
+		title: 'Popular Topics',
+		description: 'A list of topics that are sorted by post count',
+		feed_url: `/popular/${req.params.term || 'daily'}.rss`,
+		site_url: `/popular/${req.params.term || 'daily'}`,
+		sort: 'posts',
+		timestampField: 'timestamp',
+		term: 'daily',
+	}, req, res, next);
+}
+
+async function generateSorted(options, req, res, next) {
+	const termParam = req.params.term || options.term;
+	if (!Object.hasOwn(terms, termParam)) {
+		return next();
+	}
+
+	const term = terms[termParam];
+	const { uid, ok } = await getUidFromToken(req, res);
+	if (!ok) {
+		return;
+	}
+
+	const params = {
+		uid: uid,
+		start: 0,
+		stop: 19,
+		term: term,
+		sort: options.sort,
+		tags: req.query.tag,
+	};
+
+	let { cid } = req.query;
+	if (cid) {
+		if (!Array.isArray(cid)) {
+			cid = [cid];
+		}
+		params.cids = await privileges.categories.filterCids('topics:read', cid, uid);
+	}
+
+	const result = await topics.getSortedTopics(params);
+	const feed = await generateTopicsFeed({
+		uid: uid,
+		title: options.title,
+		description: options.description,
+		feed_url: options.feed_url,
+		site_url: options.site_url,
+	}, result.topics, options.timestampField);
+
+	sendFeed(feed, res);
+}
+
+async function sendTopicsFeed(options, set, res, timestampField) {
+	const start = options.hasOwnProperty('start') ? options.start : 0;
+	const stop = options.hasOwnProperty('stop') ? options.stop : 19;
+	const topicData = await topics.getTopicsFromSet(set, options.uid, start, stop);
+	const feed = await generateTopicsFeed(options, topicData.topics, timestampField);
+	sendFeed(feed, res);
+}
+
+async function generateTopicsFeed(feedOptions, feedTopics, timestampField) {
+	feedOptions.ttl = 60;
+	feedOptions.feed_url = nconf.get('url') + feedOptions.feed_url;
+	feedOptions.site_url = nconf.get('url') + feedOptions.site_url;
+
+	feedTopics = feedTopics.filter(t => t && !t.deleted);
+
+	const feed = new rss(feedOptions);
+
+	if (feedTopics.length > 0) {
+		feed.pubDate = new Date(feedTopics[0][timestampField]).toUTCString();
+	}
+
+	if (feedOptions.useMainPost) {
+		const tids = feedTopics.map(topic => topic.tid);
+		const mainPosts = await topics.getMainPosts(tids, feedOptions.uid);
+		feedTopics.forEach((topicData, index) => {
+			topicData.mainPost = mainPosts[index];
+		});
+	}
+
+	function addFeedItem(topicData) {
+		const title = stripUnicodeControlChars(topicData.title);
+		const feedItem = {
+			title: utils.stripHTMLTags(title, utils.tags),
+			url: `${nconf.get('url')}/topic/${topicData.slug}`,
+			date: new Date(topicData[timestampField]).toUTCString(),
+		};
+
+		if (topicData.teaser && topicData.teaser.user && !feedOptions.useMainPost) {
+			feedItem.description = stripUnicodeControlChars(topicData.teaser.content);
+			feedItem.author = topicData.teaser.user.username;
+			feed.item(feedItem);
+			return;
+		}
+		const { mainPost } = topicData;
+		if (!mainPost || mainPost.deleted) {
+			feed.item(feedItem);
+			return;
+		}
+		feedItem.description = stripUnicodeControlChars(mainPost.content);
+		feedItem.author = mainPost.user && mainPost.user.username;
+		feed.item(feedItem);
+	}
+
+	feedTopics.forEach(addFeedItem);
+	return feed;
+}
+
+async function generateForRecentPosts(req, res) {
+	const page = parseInt(req.query.page, 10) || 1;
+	const postsPerPage = 20;
+	const start = Math.max(0, (page - 1) * postsPerPage);
+	const stop = start + postsPerPage - 1;
+	const { uid, ok } = await getUidFromToken(req, res);
+	if (!ok) {
+		return;
+	}
+	const postData = await posts.getRecentPosts(uid, start, stop, 'month');
+	const feed = generateForPostsFeed({
+		title: 'Recent Posts',
+		description: 'A list of recent posts',
+		feed_url: '/recentposts.rss',
+		site_url: '/recentposts',
+	}, postData);
+
+	sendFeed(feed, res);
+}
+
+async function generateForCategoryRecentPosts(req, res, next) {
+	const cid = req.params.category_id;
+	const page = parseInt(req.query.page, 10) || 1;
+	const topicsPerPage = 20;
+	const start = Math.max(0, (page - 1) * topicsPerPage);
+	const stop = start + topicsPerPage - 1;
+	const { uid, ok } = await getUidFromToken(req, res);
+	if (!ok) {
+		return;
+	}
+
+	const [userPrivileges, category, postData] = await Promise.all([
+		privileges.categories.get(cid, uid),
+		categories.getCategoryData(cid),
+		categories.getRecentReplies(cid, uid, start, stop),
+	]);
+
+	if (!category || category.disabled) {
+		return next();
+	}
+
+	if (!userPrivileges['topics:read']) {
+		return next();
+	}
+
+	const feed = generateForPostsFeed({
+		title: `${category.name} Recent Posts`,
+		description: `A list of recent posts from ${category.name}`,
+		feed_url: `/category/${cid}/recentposts.rss`,
+		site_url: `/category/${cid}/recentposts`,
+	}, postData);
+
+	sendFeed(feed, res);
+}
+
+function generateForPostsFeed(feedOptions, posts) {
+	feedOptions.ttl = 60;
+	feedOptions.feed_url = nconf.get('url') + feedOptions.feed_url;
+	feedOptions.site_url = nconf.get('url') + feedOptions.site_url;
+
+	const feed = new rss(feedOptions);
+
+	if (posts.length > 0) {
+		feed.pubDate = new Date(parseInt(posts[0].timestamp, 10)).toUTCString();
+	}
+
+	posts.forEach((postData) => {
+		const title = stripUnicodeControlChars(postData.topic ? postData.topic.title : '');
+		feed.item({
+			title: title,
+			description: stripUnicodeControlChars(postData.content),
+			url: `${nconf.get('url')}/post/${postData.pid}`,
+			author: postData.user ? postData.user.username : '',
+			date: new Date(parseInt(postData.timestamp, 10)).toUTCString(),
+		});
+	});
+
+	return feed;
+}
+
+async function generateForUserTopics(req, res, next) {
+	const { userslug } = req.params;
+	const uid = await user.getUidByUserslug(userslug);
+	if (!uid) {
+		return next();
+	}
+	const userData = await user.getUserFields(uid, ['uid', 'username']);
+	const { uid: authUid, ok } = await getUidFromToken(req, res);
+	if (!ok) {
+		return;
+	}
+	let cids = await db.getSortedSetRangeByScore(`uid:${uid}:cids`, 0, -1, 1, '+inf');
+	cids = await privileges.categories.filterCids('topics:read', cids, authUid);
+	const sets = cids.map(c => `cid:${c}:uid:${userData.uid}:tids`);
+	await sendTopicsFeed({
+		uid: authUid,
+		title: `Topics by ${userData.username}`,
+		description: `A list of topics that are posted by ${userData.username}`,
+		feed_url: `/user/${userslug}/topics.rss`,
+		site_url: `/user/${userslug}/topics`,
+	}, sets, res, 'timestamp');
+}
+
+async function generateForTag(req, res) {
+	const { uid, ok } = await getUidFromToken(req, res);
+	if (!ok) {
+		return;
+	}
+	const tag = stripUnicodeControlChars(String(req.params.tag));
+	const page = parseInt(req.query.page, 10) || 1;
+	const topicsPerPage = meta.config.topicsPerPage || 20;
+	const start = Math.max(0, (page - 1) * topicsPerPage);
+	const stop = start + topicsPerPage - 1;
+	let cids = await categories.getCidsByPrivilege('categories:cid', uid, 'topics:read');
+	cids = cids.filter(cid => cid !== -1);
+	const sets = cids.map(cid => `cid:${cid}:tag:${String(req.params.tag)}:topics`);
+	await sendTopicsFeed({
+		uid: uid,
+		title: `Topics tagged with ${tag}`,
+		description: `A list of topics that have been tagged with ${tag}`,
+		feed_url: `/tags/${tag}.rss`,
+		site_url: `/tags/${tag}`,
+		start: start,
+		stop: stop,
+	}, sets, res, 'timestamp');
+}
+
+function getRssTokenRateLimitKey(req) {
+	return `rss:token:fail:${clientIp.getClientIp(req)}`;
+}
+
+async function getUidFromToken(req, res) {
+	const authUid = parseInt(req.uid, 10) || 0;
+	const hasUid = Object.hasOwn(req.query, 'uid');
+	const hasToken = Object.hasOwn(req.query, 'token');
+
+	if (!hasUid && !hasToken) {
+		return { uid: authUid, ok: true };
+	}
+
+	const queryUid = parseInt(req.query.uid, 10) || 0;
+	const { token } = req.query;
+	const rateLimitKey = getRssTokenRateLimitKey(req);
+	const withinLimit = await ratelimit.check(rateLimitKey, {
+		window: RSS_TOKEN_RATE_LIMIT_WINDOW,
+		max: RSS_TOKEN_RATE_LIMIT_MAX,
+	});
+	if (!withinLimit || queryUid <= 0 || !token) {
+		await controllerHelpers.notAllowed(req, res);
+		return { uid: authUid, ok: false };
+	}
+
+	const userToken = await db.getObjectField(`user:${queryUid}`, 'rss_token');
+	if (userToken !== token) {
+		await controllerHelpers.notAllowed(req, res);
+		return { uid: authUid, ok: false };
+	}
+
+	await ratelimit.clear(rateLimitKey);
+	req.uid = queryUid;
+	req.loggedIn = queryUid > 0;
+	return { uid: queryUid, ok: true };
+}
+
+function sendFeed(feed, res) {
+	const xml = feed.xml();
+	res.type('xml').set('Content-Length', Buffer.byteLength(xml)).send(xml);
+}

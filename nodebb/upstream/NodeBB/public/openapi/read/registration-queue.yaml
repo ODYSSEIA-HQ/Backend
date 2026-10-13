@@ -1,0 +1,63 @@
+get:
+  tags:
+    - admin
+  summary: Get registration queue/invites
+  responses:
+    "200":
+      description: "A JSON object containing the registration queue and invites"
+      content:
+        application/json:
+          schema:
+            allOf:
+              - type: object
+                properties:
+                  title:
+                    type: string
+                  registrationQueueCount:
+                    type: number
+                  users:
+                    type: array
+                    description: Every registration on the current page, in queue order. Kept for
+                      backwards compatibility; `cleanUsers` and `spamUsers` are the same
+                      entries partitioned by `spamSuspected`
+                    items:
+                      $ref: ../components/schemas/RegistrationQueueUser.yaml#/RegistrationQueueUser
+                  cleanUsers:
+                    type: array
+                    items:
+                      $ref: ../components/schemas/RegistrationQueueUser.yaml#/RegistrationQueueUser
+                  spamUsers:
+                    type: array
+                    items:
+                      $ref: ../components/schemas/RegistrationQueueUser.yaml#/RegistrationQueueUser
+                  customHeaders:
+                    type: array
+                  customBulkActions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        title:
+                          type: string
+                        id:
+                          type: string
+                        class:
+                          type: string
+                        icon:
+                          type: string
+                  invites:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        uid:
+                          type: number
+                        invitations:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              email:
+                                type: string
+              - $ref: ../components/schemas/Pagination.yaml#/Pagination
+              - $ref: ../components/schemas/CommonProps.yaml#/CommonProps

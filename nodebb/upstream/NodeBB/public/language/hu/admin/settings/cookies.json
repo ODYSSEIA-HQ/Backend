@@ -1,0 +1,15 @@
+{
+	"eu-consent": "EU hozzájárulás",
+	"consent.enabled": "Engedélyezve",
+	"consent.message": "Értesítés szövege",
+	"consent.acceptance": "Elfogadás szövege",
+	"consent.link-text": "Irányelv link felirata",
+	"consent.link-url": "Irányelv link URL-je",
+	"consent.blank-localised-default": "Hagyd üresen a NodeBB alapértelmezett használatához (lefordított)",
+	"settings": "Beállítások",
+	"cookie-domain": "Munkamenet süti domain",
+	"max-user-sessions": "Aktív munkamenetek maximális száma felhasználónként",
+	"blank-default": "Hagyd üresen az alapértelmezett beállítás használatához",
+	"revoke-all-sessions": "Revoke All Sessions",
+	"revoke-all-sessions-desc": "This will delete all sessions, you will be logged out and will have to login again!"
+}

@@ -1,0 +1,316 @@
+'use strict';
+
+const categories = require('../../categories');
+const api = require('../../api');
+const helpers = require('../helpers');
+const messaging = require('../../messaging');
+const events = require('../../events');
+const activitypub = require('../../activitypub');
+const utils = require('../../utils');
+
+const Admin = module.exports;
+
+function formatTokenForAdmin(tokenObj, { includeSecret = false } = {}) {
+	if (!tokenObj) {
+		return null;
+	}
+
+	const { token, ...rest } = tokenObj;
+	const payload = {
+		...rest,
+		tokenId: api.utils.tokens.fingerprint(token),
+		tokenMasked: utils.maskToken(token),
+	};
+
+	if (includeSecret) {
+		payload.secret = token;
+	}
+
+	return payload;
+}
+
+Admin.updateSetting = async (req, res) => {
+	await api.admin.updateSetting(req, {
+		setting: req.params.setting,
+		value: req.body.value,
+	});
+
+	helpers.formatApiResponse(200, res);
+};
+
+Admin.saveCustomUserFields = async (req, res) => {
+	await api.admin.users.saveCustomFields(req, { fields: req.body.fields });
+
+	helpers.formatApiResponse(200, res);
+};
+
+Admin.getAnalyticsKeys = async (req, res) => {
+	helpers.formatApiResponse(200, res, {
+		keys: await api.admin.getAnalyticsKeys(),
+	});
+};
+
+Admin.getAnalyticsData = async (req, res) => {
+	helpers.formatApiResponse(200, res, await api.admin.getAnalyticsData(req, {
+		set: req.params.set,
+		until: parseInt(req.query.until, 10) || Date.now(),
+		amount: req.query.amount,
+		units: req.query.units,
+	}));
+};
+
+Admin.generateToken = async (req, res) => {
+	const uid = String(req.body.uid).trim();
+	const { description } = req.body;
+	const token = await api.utils.tokens.generate({ uid, description });
+	const tokenObj = await api.utils.tokens.get(token);
+	await events.log({
+		type: 'token-add',
+		uid: req.uid,
+		ip: req.ip,
+		_tokenUid: uid,
+		description,
+	});
+	helpers.formatApiResponse(200, res, formatTokenForAdmin(tokenObj, { includeSecret: true }));
+};
+
+Admin.getToken = async (req, res) => {
+	const token = await api.utils.tokens.resolveIdentifier(req.params.token);
+	const tokenObj = await api.utils.tokens.get(token);
+	helpers.formatApiResponse(200, res, tokenObj ? {
+		uid: tokenObj.uid,
+		description: tokenObj.description,
+	} : null);
+};
+
+Admin.updateToken = async (req, res) => {
+	const { uid, description } = req.body;
+	const token = await api.utils.tokens.resolveIdentifier(req.params.token);
+
+	helpers.formatApiResponse(200, res, formatTokenForAdmin(await api.utils.tokens.update(token, { uid, description })));
+};
+
+Admin.rollToken = async (req, res) => {
+	const token = await api.utils.tokens.resolveIdentifier(req.params.token);
+	const newToken = await api.utils.tokens.roll(token);
+	const tokenObj = await api.utils.tokens.get(newToken);
+	helpers.formatApiResponse(200, res, formatTokenForAdmin(tokenObj, { includeSecret: true }));
+};
+
+Admin.deleteToken = async (req, res) => {
+	const token = await api.utils.tokens.resolveIdentifier(req.params.token);
+	await api.utils.tokens.delete(token);
+	await events.log({
+		type: 'token-delete',
+		uid: req.uid,
+		ip: req.ip,
+	});
+	helpers.formatApiResponse(200, res);
+};
+
+Admin.chats = {};
+
+Admin.chats.deleteRoom = async (req, res) => {
+	const roomData = await messaging.getRoomData(req.params.roomId);
+	if (!roomData) {
+		throw new Error('[[error:no-room]]');
+	}
+	await messaging.deleteRooms([req.params.roomId]);
+
+	events.log({
+		type: 'chat-room-deleted',
+		roomId: req.params.roomId,
+		roomName: roomData.roomName ? roomData.roomName : `No room name`,
+		uid: req.uid,
+		ip: req.ip,
+	});
+	helpers.formatApiResponse(200, res);
+};
+
+Admin.listGroups = async (req, res) => {
+	helpers.formatApiResponse(200, res, await api.admin.listGroups());
+};
+
+Admin.activitypub = {};
+
+Admin.activitypub.addRule = async (req, res) => {
+	let { type, value, cid, action } = req.body;
+
+	let exists = true;
+	const parsedCid = parseInt(cid, 10);
+	if (utils.isNumber(parsedCid) && parsedCid > 0) {
+		exists = await categories.exists(parsedCid);
+		cid = parsedCid;
+	} else {
+		cid = -1;
+	}
+
+	if (!value || !exists) {
+		return helpers.formatApiResponse(400, res);
+	}
+
+	await activitypub.rules.upsert(type, value, cid, action);
+	helpers.formatApiResponse(200, res, await activitypub.rules.list());
+};
+
+Admin.activitypub.deleteRule = async (req, res) => {
+	const { rid } = req.params;
+	await activitypub.rules.delete(rid);
+	helpers.formatApiResponse(200, res, await activitypub.rules.list());
+};
+
+Admin.activitypub.reorderRules = async (req, res) => {
+	const { rids } = req.body;
+	await activitypub.rules.reorder(rids);
+	helpers.formatApiResponse(200, res, await activitypub.rules.list());
+};
+
+Admin.activitypub.addRelay = async (req, res, next) => {
+	const { url } = req.body;
+	if (!url) {
+		return next();
+	}
+
+	await activitypub.relays.add(url);
+	helpers.formatApiResponse(200, res, await activitypub.relays.list());
+};
+
+Admin.activitypub.removeRelay = async (req, res) => {
+	const { url } = req.params;
+
+	await activitypub.relays.remove(url);
+	helpers.formatApiResponse(200, res, await activitypub.relays.list());
+};
+
+
+Admin.activitypub.addBlocklist = async (req, res, next) => {
+	const { url } = req.body;
+	if (!url) {
+		return next();
+	}
+
+	await activitypub.blocklists.add(url);
+	helpers.formatApiResponse(200, res, await activitypub.blocklists.list());
+};
+
+Admin.activitypub.viewBlocklist = async (req, res) => {
+	const { url } = req.params;
+
+	const { domains, count } = await activitypub.blocklists.get(url);
+	helpers.formatApiResponse(200, res, { domains: domains.map(d => d.domain), count });
+};
+
+Admin.activitypub.removeBlocklist = async (req, res) => {
+	const { url } = req.params;
+
+	await activitypub.blocklists.remove(url);
+	helpers.formatApiResponse(200, res, await activitypub.blocklists.list());
+};
+
+Admin.activitypub.refreshBlocklist = async (req, res) => {
+	const { url } = req.params;
+
+	const count = await activitypub.blocklists.refresh(url);
+	const blocklists = await activitypub.blocklists.list();
+
+	helpers.formatApiResponse(200, res, { blocklists, count });
+};
+
+Admin.activitypub.addCoreDomain = async (req, res) => {
+	const { domain, severity } = req.body;
+	if (!domain) {
+		return helpers.formatApiResponse(400, res);
+	}
+
+	try {
+		const parsed = new URL(`https://${domain}`);
+		if (parsed.hostname.split('.').length < 2) {
+			return helpers.formatApiResponse(400, res);
+		}
+	} catch (e) {
+		return helpers.formatApiResponse(400, res);
+	}
+
+	await activitypub.blocklists.core.add(domain, severity);
+	helpers.formatApiResponse(200, res, await activitypub.blocklists.get('core'));
+};
+
+Admin.activitypub.removeCoreDomain = async (req, res) => {
+	const { domain } = req.query;
+	if (!domain) {
+		return helpers.formatApiResponse(400, res);
+	}
+
+	await activitypub.blocklists.core.remove(domain);
+	helpers.formatApiResponse(200, res, await activitypub.blocklists.get('core'));
+};
+
+Admin.activitypub.getHashtags = async (req, res) => {
+	const hashtags = await activitypub.hashtags.list();
+	const relay = await activitypub.hashtags.getRelay();
+	helpers.formatApiResponse(200, res, { hashtags, relay });
+};
+
+Admin.activitypub.addHashtag = async (req, res) => {
+	let { tag, cid } = req.body;
+
+	if (!tag || !tag.trim()) {
+		return helpers.formatApiResponse(400, res);
+	}
+	tag = tag.trim().toLowerCase();
+
+	if (cid) {
+		cid = parseInt(cid, 10);
+		const categories = require('../../categories');
+		const exists = await categories.exists(cid);
+		if (!exists) {
+			return helpers.formatApiResponse(400, res);
+		}
+	}
+
+	await activitypub.hashtags.follow(tag, cid);
+	helpers.formatApiResponse(200, res, await activitypub.hashtags.list());
+};
+
+Admin.activitypub.removeHashtag = async (req, res) => {
+	const { tag } = req.params;
+	await activitypub.hashtags.unfollow(tag);
+	helpers.formatApiResponse(200, res, await activitypub.hashtags.list());
+};
+
+Admin.activitypub.getHashtagRelay = async (req, res) => {
+	const relay = await activitypub.hashtags.getRelay();
+	helpers.formatApiResponse(200, res, { relay });
+};
+
+Admin.activitypub.setHashtagRelay = async (req, res) => {
+	const { host } = req.body;
+	if (!host || !host.trim()) {
+		return helpers.formatApiResponse(400, res);
+	}
+
+	await activitypub.hashtags.setRelay(host);
+	helpers.formatApiResponse(200, res, { relay: host });
+};
+
+Admin.plugins = {};
+
+Admin.plugins.install = async (req, res) => {
+	await api.admin.plugins.install(req, { id: req.params.pluginId, version: req.body.version });
+	helpers.formatApiResponse(200, res);
+};
+
+Admin.plugins.uninstall = async (req, res) => {
+	await api.admin.plugins.uninstall(req, { id: req.params.pluginId });
+	helpers.formatApiResponse(200, res);
+};
+
+Admin.plugins.setActive = async (req, res) => {
+	await api.admin.plugins.setActive(req, { id: req.params.pluginId, active: req.body.active });
+	helpers.formatApiResponse(200, res);
+};
+
+Admin.plugins.upgrade = async (req, res) => {
+	await api.admin.plugins.upgrade(req, { id: req.params.pluginId, version: req.body.version });
+	helpers.formatApiResponse(200, res);
+};

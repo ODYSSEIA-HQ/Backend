@@ -1,0 +1,10 @@
+{
+    "settings.title": "主题设置",
+    "settings.intro": "您可以在这里自定义主题设置。设置将按设备单独存储，因此您可以在不同设备（手机、平板、台式机等）上使用不同的设置。",
+    "settings.mobile-menu-side": "移动端导航菜单切换到另一侧",
+    "settings.autoHidingNavbar": "滚动时自动隐藏导航条",
+    "settings.autoHidingNavbar-xs": "非常小的屏幕（如纵向模式的手机）。",
+    "settings.autoHidingNavbar-sm": "较小的屏幕（如手机、某些平板电脑）。",
+    "settings.autoHidingNavbar-md": "中等尺寸的屏幕（如横向模式的平板电脑）。",
+    "settings.autoHidingNavbar-lg": "较大的屏幕（如台式电脑）。"
+}

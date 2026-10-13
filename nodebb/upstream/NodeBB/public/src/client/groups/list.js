@@ -1,0 +1,62 @@
+'use strict';
+
+define('forum/groups/list', [
+	'api', 'modals', 'alerts',
+], function (api, modals, alerts) {
+	const Groups = {};
+
+	Groups.init = function () {
+		// Group creation
+		$('button[data-action="new"]').on('click', async function () {
+			const modal = await modals.prompt('[[groups:new-group.group-name]]', function (name) {
+				if (name === '') {
+					return false;
+				}
+				if (name && name.trim().length) {
+					api.post('/groups', { name }).then((res) => {
+						modal.modal('hide');
+						ajaxify.go('groups/' + res.slug);
+					}).catch(alerts.error);
+					return false;
+				}
+			});
+		});
+		const params = utils.params();
+		$('#search-sort').val(params.sort || 'alpha');
+
+		// Group searching
+		$('#search-text').on('keyup', utils.debounce(Groups.search, 200));
+		$('#search-button').on('click', Groups.search);
+		$('#search-sort').on('change', function () {
+			ajaxify.go('groups?sort=' + $('#search-sort').val());
+		});
+	};
+
+	Groups.search = function () {
+		api.get('/api/groups', {
+			query: $('#search-text').val(),
+			sort: $('#search-sort').val(),
+			filterHidden: true,
+			showMembers: true,
+			hideEphemeralGroups: true,
+		}).then(renderSearchResults)
+			.catch(alerts.error);
+
+		return false;
+	};
+
+	async function renderSearchResults(data) {
+		const [paginationHtml, groupsHtml] = await Promise.all([
+			app.parseAndTranslate('partials/paginator', {
+				pagination: data.pagination,
+			}),
+			app.parseAndTranslate('partials/groups/list', {
+				groups: data.groups,
+			}),
+		]);
+		$('.pagination-container').replaceWith(paginationHtml);
+		$('#groups-list').empty().append(groupsHtml);
+	}
+
+	return Groups;
+});

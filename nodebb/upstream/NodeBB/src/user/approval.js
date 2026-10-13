@@ -1,0 +1,219 @@
+'use strict';
+
+const winston = require('winston');
+
+const db = require('../database');
+const meta = require('../meta');
+const emailer = require('../emailer');
+const notifications = require('../notifications');
+const groups = require('../groups');
+const utils = require('../utils');
+const slugify = require('../slugify');
+const plugins = require('../plugins');
+const tx = require('../translator');
+
+module.exports = function (User) {
+	User.createOrQueue = async function (req, userData, opts = {}) {
+		User.checkUsernameLength(userData.username);
+		const queue = await User.shouldQueueUser(req.ip);
+		const result = await plugins.hooks.fire('filter:register.shouldQueue', { req, userData, queue });
+
+		// prevent picture if reputation required
+		if (Object.hasOwn(userData, 'picture') && (!meta.config['reputation:disabled'] && meta.config['min:rep:profile-picture'] > 0)) {
+			delete userData.picture;
+		}
+
+		if (result.queue) {
+			await User.addToApprovalQueue({ ...userData, ip: req.ip, _opts: JSON.stringify(opts) });
+			return { queued: true, message: await getRegistrationQueuedMessage() };
+		}
+
+		const uid = await User.create(userData, opts);
+		return { queued: false, uid };
+	};
+
+	User.addToApprovalQueue = async function (userData) {
+		userData.username = userData.username.trim();
+		userData.userslug = slugify(userData.username);
+		await canQueue(userData);
+		const hashedPassword = await User.hashPassword(userData.password);
+		const data = {
+			username: userData.username,
+			email: userData.email,
+			ip: userData.ip,
+			_opts: userData._opts || '{}',
+		};
+		if (hashedPassword) {
+			data.hashedPassword = hashedPassword;
+		}
+		const results = await plugins.hooks.fire('filter:user.addToApprovalQueue', { data, userData });
+		await db.setObject(`registration:queue:name:${userData.username}`, results.data);
+		await db.sortedSetAdd('registration:queue', Date.now(), userData.username);
+		await sendNotificationToAdmins(userData.username);
+	};
+
+	async function canQueue(userData) {
+		await User.isDataValid(userData);
+		const usernames = await db.getSortedSetRange('registration:queue', 0, -1);
+		if (usernames.includes(userData.username)) {
+			throw new Error('[[error:username-taken]]');
+		}
+		const keys = usernames.filter(Boolean).map(username => `registration:queue:name:${username}`);
+		const data = await db.getObjectsFields(keys, ['email']);
+		const emails = data.map(data => data && data.email).filter(Boolean);
+		if (userData.email && emails.includes(userData.email)) {
+			throw new Error('[[error:email-taken]]');
+		}
+	}
+
+	async function sendNotificationToAdmins(username) {
+		const notifObj = await notifications.create({
+			type: 'new-register',
+			bodyShort: tx.compile('notifications:new-register', tx.escape(username)),
+			nid: `new-register:${username}`,
+			path: '/registration-queue',
+			mergeId: 'new-register',
+		});
+		await notifications.pushGroup(notifObj, 'administrators');
+	}
+
+	User.acceptRegistration = async function (username) {
+		const userData = await db.getObject(`registration:queue:name:${username}`);
+		if (!userData) {
+			throw new Error('[[error:invalid-data]]');
+		}
+		const opts = parseCreateOptions(userData);
+		const creation_time = await db.sortedSetScore('registration:queue', username);
+		const uid = await User.create(userData, opts);
+		if (userData.hashedPassword) {
+			await User.setUserFields(uid, {
+				password: userData.hashedPassword,
+				'password:shaWrapped': 1,
+			});
+		}
+		await removeFromQueue(username);
+		await rescindNotification(username);
+		await plugins.hooks.fire('filter:register.complete', { uid: uid });
+		await emailer.send('registration_accepted', uid, {
+			username: username,
+			email: userData.email,
+			subject: `[[email:welcome-to, ${meta.config.title || meta.config.browserTitle || 'NodeBB'}]]`,
+			template: 'registration_accepted',
+			uid: uid,
+		}).catch(err => winston.error(`[emailer.send] ${err.stack}`));
+		const total = await db.incrObjectFieldBy('registration:queue:approval:times', 'totalTime', Math.floor((Date.now() - creation_time) / 60000));
+		const counter = await db.incrObjectField('registration:queue:approval:times', 'counter');
+		await db.setObjectField('registration:queue:approval:times', 'average', total / counter);
+		return uid;
+	};
+
+	function parseCreateOptions(userData) {
+		try {
+			const opts = JSON.parse(userData._opts || '{}');
+			delete userData._opts;
+			return opts;
+		} catch (err) {
+			winston.error(`[user.acceptRegistration] Failed to parse create options for queued user ${userData.username}: ${err.stack}`);
+			return {};
+		}
+	}
+
+	async function rescindNotification(username) {
+		await notifications.rescind(`new-register:${username}`);
+		const uids = await groups.getMembers('administrators', 0, -1);
+		uids.forEach(uid => User.notifications.pushCount(uid));
+	}
+
+	User.rejectRegistration = async function (username) {
+		await removeFromQueue(username);
+		await rescindNotification(username);
+	};
+
+	async function removeFromQueue(username) {
+		await Promise.all([
+			db.sortedSetRemove('registration:queue', username),
+			db.delete(`registration:queue:name:${username}`),
+		]);
+	}
+
+	User.shouldQueueUser = async function (ip) {
+		const { registrationApprovalType } = meta.config;
+		if (registrationApprovalType === 'admin-approval') {
+			return true;
+		} else if (registrationApprovalType === 'admin-approval-ip') {
+			const count = await db.sortedSetCard(`ip:${ip}:uid`);
+			return !!count;
+		}
+		return false;
+	};
+
+	async function getRegistrationQueuedMessage() {
+		let message = '[[register:registration-added-to-queue]]';
+		if (meta.config.showAverageApprovalTime) {
+			const average_time = await db.getObjectField('registration:queue:approval:times', 'average');
+			if (average_time > 0) {
+				message += ` [[register:registration-queue-average-time, ${Math.floor(average_time / 60)}, ${Math.floor(average_time % 60)}]]`;
+			}
+		}
+		if (meta.config.autoApproveTime > 0) {
+			message += ` [[register:registration-queue-auto-approve-time, ${meta.config.autoApproveTime}]]`;
+		}
+		return message;
+	};
+
+	User.getRegistrationQueue = async function (start, stop) {
+		const data = await db.getSortedSetRevRangeWithScores('registration:queue', start, stop);
+		const keys = data.filter(Boolean).map(user => `registration:queue:name:${user.value}`);
+		let users = await db.getObjects(keys);
+		users = users.filter(Boolean).map((user, index) => {
+			user.timestampISO = utils.toISOString(data[index].score);
+			delete user.hashedPassword;
+			return user;
+		});
+		await Promise.all(users.map(async (user) => {
+			await getIPMatchedUsers(user);
+			// temporary: see http://www.stopforumspam.com/forum/viewtopic.php?id=6392
+			user.ip = user.ip.replace('::ffff:', '');
+			user.customActions = user.customActions || [];
+			/*
+				// then spam prevention plugins, using the "filter:user.getRegistrationQueue" hook can be like:
+				user.customActions.push({
+					title: '[[spam-be-gone:report-user]]',
+					id: 'report-spam-user-' + user.username,
+					class: 'btn-warning report-spam-user',
+					icon: 'fa-flag'
+				});
+			 */
+		}));
+
+		const results = await plugins.hooks.fire('filter:user.getRegistrationQueue', { users: users });
+		return results.users;
+	};
+
+	async function getIPMatchedUsers(user) {
+		const ips = user.ip.startsWith('::ffff:') ? [user.ip, user.ip.slice('::ffff:'.length)] : [user.ip];
+		const uidSets = await Promise.all(
+			ips.map(ip => User.getUidsFromSet(`ip:${ip}:uid`, 0, -1))
+		);
+		const uids = Array.from(new Set(uidSets.flat()));
+		user.ipMatch = await User.getUsersFields(uids, ['uid', 'username', 'picture']);
+	}
+
+	User.autoApprove = async function () {
+		if (meta.config.autoApproveTime <= 0) {
+			return;
+		}
+		const users = await db.getSortedSetRevRangeWithScores('registration:queue', 0, -1);
+		const now = Date.now();
+		for (const user of users.filter(user => now - user.score >= meta.config.autoApproveTime * 3600000)) {
+			try {
+				// eslint-disable-next-line no-await-in-loop
+				await User.acceptRegistration(user.value);
+			} catch (err) {
+				winston.error(err.stack);
+				// eslint-disable-next-line no-await-in-loop
+				await removeFromQueue(user.value);
+			}
+		}
+	};
+};

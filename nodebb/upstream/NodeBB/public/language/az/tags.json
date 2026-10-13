@@ -1,0 +1,18 @@
+{
+    "all-tags": "Bütün təqlər",
+    "no-tag-topics": "Bu təq ilə mövzular yoxdur.",
+    "no-tags-found": "Teq tapılmadı",
+    "tags": "Teqlər",
+    "enter-tags-here": "Teqlər daxil edin, %1 - %2 simvol.",
+    "enter-tags-here-short": "Teqləri daxil edin...",
+    "no-tags": "Hələ heç bir təq yoxdur.",
+    "select-tags": "Teqlər seçin",
+    "tag-whitelist": "İcazəli təq",
+    "watching": "İzlənilən",
+    "not-watching": "İzlənilməyən",
+    "watching.description": "Yeni mövzular haqqında mənə bildir.",
+    "not-watching.description": "Yeni mövzular haqqında məlumat vermə.",
+    "following-tag.message": "Kimsə bu teqlə mövzu göndərdikdə bildirişlər alacaqsınız.",
+    "following-tag.message-no-notifications": "You are now following this tag, but your notification setting is set to none.",
+    "not-following-tag.message": "Kimsə bu teqlə mövzu göndərdikdə bildirişlər almayacaqsınız."
+}

@@ -1,0 +1,15 @@
+{
+	"eu-consent": "EU-samtykke",
+	"consent.enabled": "Aktivert",
+	"consent.message": "Varslingsmelding",
+	"consent.acceptance": "Godkjenningsmelding",
+	"consent.link-text": "Lenketekst for policy",
+	"consent.link-url": "URL til policy",
+	"consent.blank-localised-default": "La stå tomt for å bruke NodeBBs lokaliserte standardverdier",
+	"settings": "Innstillinger",
+	"cookie-domain": "Domene for øktinformasjonskapsler",
+	"max-user-sessions": "Maksimalt antall aktive økter per bruker",
+	"blank-default": "La stå tomt for standard",
+	"revoke-all-sessions": "Revoke All Sessions",
+	"revoke-all-sessions-desc": "This will delete all sessions, you will be logged out and will have to login again!"
+}

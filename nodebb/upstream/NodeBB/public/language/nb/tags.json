@@ -1,0 +1,18 @@
+{
+    "all-tags": "Alle emneord",
+    "no-tag-topics": "Det er ingen innleggg med dette emneordet.",
+    "no-tags-found": "Ingen emneord funnet",
+    "tags": "Emneord",
+    "enter-tags-here": "Skriv inn emneord, %1 - %2 tegn.",
+    "enter-tags-here-short": "Skriv emneord...",
+    "no-tags": "Det finnes ingen emneord ennå.",
+    "select-tags": "Velg emneord",
+    "tag-whitelist": "Hviteliste for emneord",
+    "watching": "Følger",
+    "not-watching": "Følger ikke",
+    "watching.description": "Varsle meg om nye innlegg",
+    "not-watching.description": "Ikke varsle meg om nye innlegg.",
+    "following-tag.message": "Du vil nå motta varsler når noen legger ut et emne med dette emneordet.",
+    "following-tag.message-no-notifications": "You are now following this tag, but your notification setting is set to none.",
+    "not-following-tag.message": "Du vil ikke motta varsler når noen legger ut et emne med dette emneordet."
+}

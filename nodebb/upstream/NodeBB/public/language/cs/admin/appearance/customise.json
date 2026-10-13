@@ -1,0 +1,20 @@
+{
+	"customise": "Přizpůsobit",
+	"custom-css": "Vlastní CSS/SASS",
+	"custom-css.description": "Zde zadejte vlastní deklarace CSS/SASS, které se použijí až po všech ostatních stylech.",
+	"custom-css.enable": "Povolit vlastní CSS/SASS",
+
+	"custom-js": "Uživatelský Javascript",
+	"custom-js.description": "Zadejte zde váš javascriptový kód. Bude spuštěn, jakmile se stránka plně načte.",
+	"custom-js.enable": "Povolit uživatelský Javascript",
+
+	"custom-header": "Uživatelská hlavička",
+	"custom-header.description": "Zde zadejte vlastní HTML (mimo meta značek, atp.), který bude přidán do části <code>☺&lt;head&gt;</code> vašeho označení fóra. Skriptovací značky jsou povoleny, ale nedoporučujeme to, jelikož je pro to vhodná záložka <a href=\"#custom-js\" data-toggle=\"tab\">Uživatelský Javascript</a>.",
+	"custom-header.enable": "Povolit uživatelskou hlavičku",
+
+	"custom-css.livereload": "Povolit aktuální znovu načtení",
+	"custom-css.livereload.description": "Povolením si vynutíte, aby všechny relace na každém zařízení pod vaším účtem se kdykoliv obnovili při kliknutí na tlačítko „Uložit”.",
+	"bsvariables": "_variables.scss",
+	"bsvariables.description": "Zde můžete přepsat proměnné bootstrapu. Můžete také použít nástroj, jako je <a href=\"https://bootstrap.build/app\">1bootstrap.build</a>, a výstup sem vložit.<br/>Změny vyžadují překompilaci a restart.",
+	"bsvariables.enable": "Povolit _variables.scss"
+}

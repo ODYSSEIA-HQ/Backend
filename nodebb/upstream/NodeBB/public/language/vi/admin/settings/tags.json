@@ -1,0 +1,15 @@
+{
+    "tag": "Cài Đặt Thẻ",
+    "link-to-manage": "Quản Lý Thẻ",
+    "system-tags": "Thẻ Hệ Thống",
+    "system-tags-help": "Chỉ người dùng đặc quyền mới có thể dùng thẻ này.",
+    "tags-per-topic": "Thẻ cho mỗi chủ đề",
+    "min-per-topic": "Số Thẻ Ít Nhất Mỗi Chủ Đề",
+    "max-per-topic": "Số Thẻ Tối Đa Mỗi Chủ Đề",
+    "min-length": "Độ Dài Thẻ Tối Thiểu",
+    "max-length": "Độ Dài Thẻ Tối Đa",
+    "case-sensitive": "Thẻ phân biệt chữ hoa chữ thường",
+    "case-sensitive-help": "Khi được bật, các thẻ sẽ phân biệt chữ hoa chữ thường (#NodeBB và #nodebb sẽ được coi là các thẻ khác nhau). Khi tắt, các thẻ sẽ được chuyển đổi thành chữ thường.",
+    "related-topics": "Chủ Đề Liên Quan",
+    "max-related-topics": "Số chủ đề liên quan tối đa để hiển thị (nếu giao diện hỗ trợ)"
+}

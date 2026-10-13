@@ -1,0 +1,382 @@
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const assert = require('assert');
+const nconf = require('nconf');
+
+const db = require('../mocks/databasemock');
+
+const meta = require('../../src/meta');
+const user = require('../../src/user');
+const groups = require('../../src/groups');
+const topics = require('../../src/topics');
+const posts = require('../../src/posts');
+const categories = require('../../src/categories');
+const plugins = require('../../src/plugins');
+const file = require('../../src/file');
+const utils = require('../../src/utils');
+
+const helpers = require('../helpers');
+const request = require('../../src/request');
+
+describe('Topic thumbs', () => {
+	let topicObj;
+	let categoryObj;
+	let adminUid;
+	let adminJar;
+	let adminCSRF;
+	let fooJar;
+	let fooCSRF;
+	let fooUid;
+
+	const thumbPaths = [
+		`${nconf.get('upload_path')}/files/test.png`,
+		`${nconf.get('upload_path')}/files/test2.png`,
+		'https://example.org',
+	];
+
+	const relativeThumbPaths = thumbPaths.map(path => path.replace(nconf.get('upload_path'), ''));
+
+	function createFiles() {
+		fs.closeSync(fs.openSync(path.resolve(__dirname, '../uploads', thumbPaths[0]), 'w'));
+		fs.closeSync(fs.openSync(path.resolve(__dirname, '../uploads', thumbPaths[1]), 'w'));
+	}
+
+	before(async () => {
+		meta.config.allowTopicsThumbnail = 1;
+
+		adminUid = await user.create({ username: 'admin', password: '123456' });
+		fooUid = await user.create({ username: 'foo', password: '123456' });
+		await groups.join('administrators', adminUid);
+		const adminLogin = await helpers.loginUser('admin', '123456');
+		adminJar = adminLogin.jar;
+		adminCSRF = adminLogin.csrf_token;
+		const fooLogin = await helpers.loginUser('foo', '123456');
+		fooJar = fooLogin.jar;
+		fooCSRF = fooLogin.csrf_token;
+
+		categoryObj = await categories.create({
+			name: 'Test Category',
+			description: 'Test category created by testing script',
+		});
+		topicObj = await topics.post({
+			uid: adminUid,
+			cid: categoryObj.cid,
+			title: 'Test Topic Title',
+			content: 'The content of test topic',
+			thumbs: [relativeThumbPaths[0]],
+		});
+
+		// Touch a couple files and associate it to a topic
+		createFiles();
+	});
+
+	it('should return bool for whether a thumb exists', async () => {
+		const exists = await topics.thumbs.exists(topicObj.topicData.tid, `${relativeThumbPaths[0]}`);
+		assert.strictEqual(exists, true);
+	});
+
+	describe('.get()', () => {
+		it('should return an array of thumbs', async () => {
+			const thumbs = await topics.thumbs.get(topicObj.topicData.tid);
+			assert.deepStrictEqual(thumbs, [{
+				id: String(topicObj.topicData.tid),
+				name: 'test.png',
+				path: `${relativeThumbPaths[0]}`,
+				url: `${nconf.get('relative_path')}${nconf.get('upload_url')}${relativeThumbPaths[0]}`,
+			}]);
+		});
+
+		it('should return an array of an array of thumbs if multiple tids are passed in', async () => {
+			const thumbs = await topics.thumbs.get([topicObj.topicData.tid, topicObj.topicData.tid + 1]);
+			assert.deepStrictEqual(thumbs, [
+				[{
+					id: String(topicObj.topicData.tid),
+					name: 'test.png',
+					path: `${relativeThumbPaths[0]}`,
+					url: `${nconf.get('relative_path')}${nconf.get('upload_url')}${relativeThumbPaths[0]}`,
+				}],
+				[],
+			]);
+		});
+	});
+
+	describe('.associate()', () => {
+		let tid;
+		let mainPid;
+
+		before(async () => {
+			topicObj = await topics.post({
+				uid: adminUid,
+				cid: categoryObj.cid,
+				title: 'Test Topic Title',
+				content: 'The content of test topic',
+			});
+			tid = topicObj.topicData.tid;
+			mainPid = topicObj.postData.pid;
+		});
+
+		it('should add an uploaded file to the topic hash', async () => {
+			await topics.thumbs.associate({
+				id: tid,
+				path: relativeThumbPaths[0],
+			});
+			const topicData = await topics.getTopicData(tid);
+			assert(topicData.thumbs.includes(relativeThumbPaths[0]));
+		});
+
+		it('should also work with a URL', async () => {
+			await topics.thumbs.associate({
+				id: tid,
+				path: relativeThumbPaths[2],
+			});
+			const topicData = await topics.getTopicData(tid);
+			assert(topicData.thumbs.includes(relativeThumbPaths[2]));
+		});
+
+		it('should update the relevant topic hash with the number of thumbnails', async () => {
+			const numThumbs = await topics.getTopicField(tid, 'numThumbs');
+			assert.strictEqual(parseInt(numThumbs, 10), 2);
+		});
+
+		it('should successfully associate a thumb with a topic even if it already contains that thumbnail (updates score)', async () => {
+			await topics.thumbs.associate({
+				id: tid,
+				path: relativeThumbPaths[0],
+			});
+
+			const topicData = await topics.getTopicData(tid);
+			assert.strictEqual(topicData.thumbs.indexOf(relativeThumbPaths[0]), 1);
+		});
+
+		it('should update the index to be passed in as the third argument', async () => {
+			await topics.thumbs.associate({
+				id: tid,
+				path: relativeThumbPaths[0],
+				score: 0,
+			});
+
+			const topicData = await topics.getTopicData(tid);
+			assert.strictEqual(topicData.thumbs.indexOf(relativeThumbPaths[0]), 0);
+		});
+
+		it('should associate the thumbnail with that topic\'s main pid\'s uploads', async () => {
+			const uploads = await posts.uploads.list(mainPid);
+			assert(uploads.includes(relativeThumbPaths[0]));
+		});
+
+		it('should maintain state in the topic\'s main pid\'s uploads if posts.uploads.sync() is called', async () => {
+			await posts.uploads.sync(mainPid);
+			const uploads = await posts.uploads.list(mainPid);
+			assert(uploads.includes(relativeThumbPaths[0]));
+		});
+	});
+
+	describe(`.delete()`, () => {
+		let tid;
+		let mainPid;
+
+		before(async () => {
+			topicObj = await topics.post({
+				uid: adminUid,
+				cid: categoryObj.cid,
+				title: 'Test Topic Title',
+				content: 'The content of test topic',
+			});
+			tid = topicObj.topicData.tid;
+			mainPid = topicObj.postData.pid;
+
+			await topics.thumbs.associate({
+				id: tid,
+				path: relativeThumbPaths[0],
+			});
+		});
+
+		it('should remove a file from sorted set', async () => {
+			await topics.thumbs.delete(tid, relativeThumbPaths[0]);
+			const thumbs = await topics.getTopicField(tid, 'thumbs');
+			assert.strictEqual(thumbs.includes(relativeThumbPaths[0]), false);
+		});
+
+		it('should no longer be associated with that topic\'s main pid\'s uploads', async () => {
+			const uploads = await posts.uploads.list(mainPid);
+			assert(!uploads.includes(path.basename(relativeThumbPaths[0])));
+		});
+
+		it('should have no more thumbs left', async () => {
+			const thumbs = await topics.getTopicField(tid, 'thumbs');
+			assert.strictEqual(thumbs.length, 0);
+		});
+
+		it('should decrement numThumbs if dissociated one by one', async () => {
+			const winston = require('winston');
+			await topics.thumbs.associate({ id: tid, path: relativeThumbPaths[0] });
+			await topics.thumbs.associate({ id: tid, path: relativeThumbPaths[1] });
+
+			await topics.thumbs.delete(tid, [relativeThumbPaths[0]]);
+			let numThumbs = parseInt(await db.getObjectField(`topic:${tid}`, 'numThumbs'), 10);
+			assert.strictEqual(numThumbs, 1);
+
+			await topics.thumbs.delete(tid, [relativeThumbPaths[1]]);
+			numThumbs = parseInt(await db.getObjectField(`topic:${tid}`, 'numThumbs'), 10);
+
+			assert.strictEqual(numThumbs, 0);
+		});
+	});
+
+	describe('.deleteAll()', () => {
+		before(async function () {
+			topicObj = await topics.post({
+				uid: adminUid,
+				cid: categoryObj.cid,
+				title: 'Test Topic Title',
+				content: 'The content of test topic',
+				thumbs: ['/files/test.png', '/files/test2.png'],
+			});
+			this.tid = topicObj.topicData.tid;
+			createFiles();
+		});
+
+		it('should have thumbs prior to tests', async function () {
+			const thumbs = await topics.getTopicField(this.tid, 'thumbs');
+			assert.deepStrictEqual(thumbs, ['/files/test.png', '/files/test2.png']);
+		});
+
+		it('should not error out', async function () {
+			await topics.thumbs.deleteAll(this.tid);
+		});
+
+		it('should remove all associated thumbs with that topic', async function () {
+			const thumbs = await topics.getTopicField(this.tid, 'thumbs');
+			assert.deepStrictEqual(thumbs, []);
+		});
+	});
+
+	describe('HTTP calls to topic thumb routes', () => {
+		before(async function () {
+			const uid = await user.create({ username: 'thumbtest', password: '123456' });
+			const login = await helpers.loginUser('thumbtest', '123456');
+
+			this.jar = login.jar;
+			this.csrf = login.csrf_token;
+
+			topicObj = await topics.post({
+				uid,
+				cid: categoryObj.cid,
+				title: 'Test Topic Title',
+				content: 'The content of test topic',
+			});
+			this.tid = topicObj.topicData.tid;
+			createFiles();
+		});
+
+		it('should succeed with a valid tid', async function () {
+			const winston = require('winston');
+
+			const { response, body } = await helpers.uploadFile(`${nconf.get('url')}/api/v3/topics/${this.tid}/thumbs`, path.join(__dirname, '../files/test.png'), {}, this.jar, this.csrf);
+			assert.strictEqual(response.statusCode, 200);
+			assert.deepStrictEqual(Object.keys(body.response.images[0]), ['url', 'name']);
+		});
+
+		it('should succeed with uploader plugins', async function () {
+			const hookMethod = async () => ({
+				name: 'test.png',
+				url: 'https://example.org',
+			});
+			await plugins.hooks.register('test', {
+				hook: 'filter:uploadFile',
+				method: hookMethod,
+			});
+
+			const { response } = await helpers.uploadFile(
+				`${nconf.get('url')}/api/v3/topics/${this.tid}/thumbs`,
+				path.join(__dirname, '../files/test.png'),
+				{},
+				this.jar,
+				this.csrf
+			);
+			assert.strictEqual(response.statusCode, 200);
+
+			await plugins.hooks.unregister('test', 'filter:uploadFile', hookMethod);
+		});
+
+		it('should fail with a non-existant tid', async function () {
+			const { response } = await helpers.uploadFile(`${nconf.get('url')}/api/v3/topics/${Number.MAX_SAFE_INTEGER}/thumbs`, path.join(__dirname, '../files/test.png'), {}, this.jar, this.csrf);
+			assert.strictEqual(response.statusCode, 404);
+		});
+
+		it('should fail when garbage is passed in', async function () {
+			const { response } = await helpers.uploadFile(`${nconf.get('url')}/api/v3/topics/abracadabra/thumbs`, path.join(__dirname, '../files/test.png'), {}, this.jar, this.csrf);
+			assert.strictEqual(response.statusCode, 404);
+		});
+
+		it('should fail when calling user cannot edit the tid', async () => {
+			const { response } = await helpers.uploadFile(`${nconf.get('url')}/api/v3/topics/2/thumbs`, path.join(__dirname, '../files/test.png'), {}, fooJar, fooCSRF);
+			assert.strictEqual(response.statusCode, 403);
+		});
+
+		it('should fail if user does not have upload:image privilege', async function () {
+			const jar = request.jar();
+			const csrf = await helpers.getCsrfToken(jar);
+			const filePath = path.join(__dirname, '../files/test.png');
+			const { response, body } = await helpers.uploadFile(
+				`${nconf.get('url')}/api/v3/topics/${this.tid}/thumbs`, filePath, {}, jar, csrf
+			);
+			assert.strictEqual(response.statusCode, 403);
+			assert(body && body.status);
+			assert.strictEqual(body.status.message, 'You do not have enough privileges for this action.');
+
+			const {response: response1, body: body1 } = await helpers.uploadFile(
+				`${nconf.get('url')}/api/topic/thumb/upload`, filePath, {}, jar, csrf
+			);
+			assert.strictEqual(response1.statusCode, 403);
+			assert(body1 && body1.status);
+			assert.strictEqual(body1.status.message, 'You do not have enough privileges for this action.');
+		});
+
+		it('should fail if thumbnails are not enabled', async function () {
+			meta.config.allowTopicsThumbnail = 0;
+
+			const { response, body } = await helpers.uploadFile(`${nconf.get('url')}/api/v3/topics/${this.tid}/thumbs`, path.join(__dirname, '../files/test.png'), {}, this.jar, this.csrf);
+			assert.strictEqual(response.statusCode, 503);
+			assert(body && body.status);
+			assert.strictEqual(body.status.message, 'Topic thumbnails are disabled.');
+		});
+
+		it('should fail if file is not image', async function () {
+			meta.config.allowTopicsThumbnail = 1;
+
+			const { response, body } = await helpers.uploadFile(`${nconf.get('url')}/api/v3/topics/${this.tid}/thumbs`, path.join(__dirname, '../files/503.html'), {}, this.jar, this.csrf);
+			assert.strictEqual(response.statusCode, 500);
+			assert(body && body.status);
+			assert.strictEqual(body.status.message, 'Invalid file type .html. Allowed types are: .png, .jpg, .bmp, .txt, .webp, .webm, .mp4, .gif, .jpeg');
+		});
+	});
+
+	describe('behaviour on topic purge', () => {
+		let topicObj;
+
+		before(async () => {
+			topicObj = await topics.post({
+				uid: adminUid,
+				cid: categoryObj.cid,
+				title: 'Test Topic Title',
+				content: 'The content of test topic',
+			});
+
+
+			await topics.thumbs.associate({ id: topicObj.tid, path: thumbPaths[0] });
+			await topics.thumbs.associate({ id: topicObj.tid, path: thumbPaths[1] });
+
+			createFiles();
+
+			await topics.purge(topicObj.tid, adminUid);
+		});
+
+		it('should not leave post upload associations behind', async () => {
+			const uploads = await posts.uploads.list(topicObj.postData.pid);
+			assert.strictEqual(uploads.length, 0);
+		});
+	});
+});

@@ -1,0 +1,17 @@
+{
+	"rewards": "Belønninger",
+	"add-reward": "Legg til belønning",
+	"condition-if-users": "Hvis brukerens",
+	"condition-is": "Er:",
+	"condition-then": "Så:",
+	"max-claims": "Antall ganger belønningen kan kreves",
+	"zero-infinite": "Skriv inn 0 for ubegrenset",
+	"select-reward": "Velg belønning",
+	"delete": "Slett",
+	"enable": "Aktiver",
+	"disable": "Deaktiver",
+
+	"alert.delete-success": "Belønning slettet",
+	"alert.no-inputs-found": "Ugyldig belønning: ingen inndata funnet! %1",
+	"alert.save-success": "Belønninger lagret"
+}

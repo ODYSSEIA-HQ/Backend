@@ -1,0 +1,28 @@
+{
+	"alert.confirm-rebuild-and-restart": "Haluatko varmasti uudelleenrakentaa ja uudelleenkäynnistää NodeBB:n?",
+	"alert.confirm-restart": "Haluatko varmasti uudelleenkäynnistää NodeBB:n?",
+	"rebuilding.title": "Rebuilding... <i class=\"fa fa-spin fa-refresh\"></i>",
+	"rebuilding.message": "NodeBB is rebuilding front-end assets (css, javascript, etc).",
+	"rebuildrestart.success.title": "<i class=\"fa fa-check\"></i> Success",
+	"rebuilding.success.message": "NodeBB has rebuilt and restarted successfully.",
+	"build.complete": "Build Complete!... <i class=\"fa fa-spin fa-refresh\"></i>",
+
+	"restarting.title": "Restarting... <i class=\"fa fa-spin fa-refresh\"></i>",
+	"restarting.message": "NodeBB is restarting.",
+	"restarting.success.message": "NodeBB has restarted successfully.",
+
+
+	"acp-title": "%1 | NodeBB admin hallintapaneeli",
+	"settings-header-contents": "Sisältö",
+	"changes-saved": "Muutokset tallennettiin",
+	"changes-saved-message": "Muutoksesi NodeBB-asetuksiin tallennettiin.",
+	"changes-not-saved": "Muutoksia ei tallennettu",
+	"changes-not-saved-message": "NodeBB encountered a problem saving your changes. (%1)",
+	"save-changes": "Tallenna muutokset",
+	"min": "Min:",
+	"max": "Max:",
+	"view": "View",
+	"edit": "Edit",
+	"add": "Add",
+	"select-icon": "Select Icon"
+}

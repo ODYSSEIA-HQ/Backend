@@ -1,0 +1,1624 @@
+'use strict';
+
+const assert = require('assert');
+const nconf = require('nconf');
+const util = require('util');
+
+const sleep = util.promisify(setTimeout);
+
+const db = require('./mocks/databasemock');
+const helpers = require('./helpers');
+const request = require('../src/request');
+const Flags = require('../src/flags');
+const Categories = require('../src/categories');
+const Topics = require('../src/topics');
+const Posts = require('../src/posts');
+const notifications = require('../src/notifications');
+const User = require('../src/user');
+const Groups = require('../src/groups');
+const Meta = require('../src/meta');
+const Privileges = require('../src/privileges');
+const plugins = require('../src/plugins');
+const utils = require('../src/utils');
+const api = require('../src/api');
+const messaging = require('../src/messaging');
+const activitypub = require('../src/activitypub');
+const apHelpers = require('./activitypub/helpers');
+
+describe('Flags', () => {
+	let uid1;
+	let adminUid;
+	let uid3;
+	let moderatorUid;
+	let jar;
+	let csrfToken;
+	let category;
+	before(async () => {
+		const dummyEmailerHook = async (data) => {};
+		// Attach an emailer hook so related requests do not error
+		plugins.hooks.register('flags-test', {
+			hook: 'static:email.send',
+			method: dummyEmailerHook,
+		});
+
+		// Create some stuff to flag
+		uid1 = await User.create({ username: 'testUser', password: 'abcdef', email: 'b@c.com' }, {
+			emailVerification: 'verify',
+		});
+
+		adminUid = await User.create({ username: 'testUser2', password: 'abcdef', email: 'c@d.com' });
+		await Groups.join('administrators', adminUid);
+
+		category = await Categories.create({
+			name: 'test category',
+		});
+		await Topics.post({
+			cid: category.cid,
+			uid: uid1,
+			title: 'Topic to flag',
+			content: 'This is flaggable content',
+		});
+
+		uid3 = await User.create({
+			username: 'unprivileged', password: 'abcdef', email: 'd@e.com',
+		});
+
+		moderatorUid = await User.create({
+			username: 'moderator', password: 'abcdef',
+		});
+		await Privileges.categories.give(['moderate'], category.cid, [moderatorUid]);
+
+		const login = await helpers.loginUser('moderator', 'abcdef');
+		jar = login.jar;
+		csrfToken = login.csrf_token;
+	});
+
+	after(() => {
+		plugins.hooks.unregister('flags-test', 'static:email.send');
+	});
+
+	describe('.create()', () => {
+		it('should create a flag and return its data', (done) => {
+			Flags.create('post', 1, 1, 'Test flag', (err, flagData) => {
+				assert.ifError(err);
+				const compare = {
+					flagId: 1,
+					targetId: 1,
+					type: 'post',
+					state: 'open',
+					target_readable: 'Post 1',
+				};
+				assert(flagData);
+				for (const key of Object.keys(compare)) {
+					assert.ok(flagData[key], `undefined key ${key}`);
+					assert.equal(flagData[key], compare[key]);
+				}
+
+				done();
+			});
+		});
+
+		it('should add the flag to the byCid zset for category 1 if it is of type post', (done) => {
+			db.isSortedSetMember(`flags:byCid:${1}`, 1, (err, isMember) => {
+				assert.ifError(err);
+				assert.ok(isMember);
+				done();
+			});
+		});
+
+		it('should add the flag to the byPid zset for pid 1 if it is of type post', (done) => {
+			db.isSortedSetMember(`flags:byPid:${1}`, 1, (err, isMember) => {
+				assert.ifError(err);
+				assert.ok(isMember);
+				done();
+			});
+		});
+	});
+
+	describe('.addReport()', () => {
+		let flagId;
+		let postData;
+
+		before(async () => {
+			// Create a topic and flag it
+			({ postData } = await Topics.post({
+				cid: category.cid,
+				uid: uid1,
+				title: utils.generateUUID(),
+				content: utils.generateUUID(),
+			}));
+			({ flagId } = await Flags.create('post', postData.pid, adminUid, utils.generateUUID()));
+		});
+
+		after(async () => {
+			Flags.purge([flagId]);
+		});
+
+		it('should add a report to an existing flag', async () => {
+			await Flags.addReport(flagId, 'post', postData.pid, uid3, utils.generateUUID(), Date.now());
+
+			const reports = await db.getSortedSetMembers(`flag:${flagId}:reports`);
+			assert.strictEqual(reports.length, 2);
+		});
+
+		it('should add an additional report even if same user calls it again', async () => {
+			// This isn't exposed to the end user, but is possible via direct method call
+			await Flags.addReport(flagId, 'post', postData.pid, uid3, utils.generateUUID(), Date.now());
+
+			const reports = await db.getSortedSetMembers(`flag:${flagId}:reports`);
+			assert.strictEqual(reports.length, 3);
+		});
+	});
+
+	describe('.rescindReport()', () => {
+		let flagId;
+		let postData;
+
+		before(async () => {
+			// Create a topic and flag it
+			({ postData } = await Topics.post({
+				cid: category.cid,
+				uid: uid1,
+				title: utils.generateUUID(),
+				content: utils.generateUUID(),
+			}));
+			({ flagId } = await Flags.create('post', postData.pid, adminUid, utils.generateUUID()));
+		});
+
+		after(async () => {
+			Flags.purge([flagId]);
+		});
+
+		it('should remove a report from an existing flag', async () => {
+			await Flags.create('post', postData.pid, uid3, utils.generateUUID());
+			await Flags.rescindReport('post', postData.pid, uid3);
+			const reports = await Flags.getReports(flagId);
+
+			assert.strictEqual(reports.length, 1);
+			assert(reports.every(({ reporter }) => reporter.uid !== uid3));
+		});
+
+		it('should automatically mark the flag resolved if there are no reports remaining after removal', async () => {
+			await Flags.rescindReport('post', postData.pid, adminUid);
+			const reports = await Flags.getReports(flagId);
+			const { state } = await Flags.get(flagId);
+
+			assert.strictEqual(reports.length, 0);
+			assert.strictEqual(state, 'resolved');
+		});
+	});
+
+	describe('.exists()', () => {
+		it('should return Boolean True if a flag matching the flag hash already exists', (done) => {
+			Flags.exists('post', 1, 1, (err, exists) => {
+				assert.ifError(err);
+				assert.strictEqual(true, exists);
+				done();
+			});
+		});
+
+		it('should return Boolean False if a flag matching the flag hash does not already exists', (done) => {
+			Flags.exists('post', 1, 2, (err, exists) => {
+				assert.ifError(err);
+				assert.strictEqual(false, exists);
+				done();
+			});
+		});
+	});
+
+	describe('.targetExists()', () => {
+		it('should return Boolean True if the targeted element exists', (done) => {
+			Flags.targetExists('post', 1, (err, exists) => {
+				assert.ifError(err);
+				assert.strictEqual(true, exists);
+				done();
+			});
+		});
+
+		it('should return Boolean False if the targeted element does not exist', (done) => {
+			Flags.targetExists('post', 15, (err, exists) => {
+				assert.ifError(err);
+				assert.strictEqual(false, exists);
+				done();
+			});
+		});
+	});
+
+	describe('.get()', () => {
+		it('should retrieve and display a flag\'s data', (done) => {
+			Flags.get(1, (err, flagData) => {
+				assert.ifError(err);
+				const compare = {
+					flagId: 1,
+					targetId: 1,
+					type: 'post',
+					state: 'open',
+					target_readable: 'Post 1',
+				};
+				assert(flagData);
+				for (const key of Object.keys(compare)) {
+					assert.ok(flagData[key], `undefined key ${key}`);
+					assert.equal(flagData[key], compare[key]);
+				}
+
+				done();
+			});
+		});
+
+		it('should show user history for admins', async () => {
+			await Groups.join('administrators', moderatorUid);
+			const { body: flagData } = await request.get(`${nconf.get('url')}/api/flags/1`, {
+				jar,
+				headers: {
+					'x-csrf-token': csrfToken,
+				},
+			});
+
+			assert(flagData.history);
+			assert(Array.isArray(flagData.history));
+
+			await Groups.leave('administrators', moderatorUid);
+		});
+
+		it('should show user history for global moderators', async () => {
+			await Groups.join('Global Moderators', moderatorUid);
+			const { body: flagData } = await request.get(`${nconf.get('url')}/api/flags/1`, {
+				jar,
+				headers: {
+					'x-csrf-token': csrfToken,
+				},
+			});
+
+			assert(flagData.history);
+			assert(Array.isArray(flagData.history));
+
+			await Groups.leave('Global Moderators', moderatorUid);
+		});
+	});
+
+	describe('.list()', () => {
+		it('should show a list of flags (with one item)', (done) => {
+			Flags.list({
+				filters: {},
+				uid: 1,
+			}, (err, payload) => {
+				assert.ifError(err);
+				assert.ok(payload.hasOwnProperty('flags'));
+				assert.ok(payload.hasOwnProperty('page'));
+				assert.ok(payload.hasOwnProperty('pageCount'));
+				assert.ok(Array.isArray(payload.flags));
+				assert.equal(payload.flags.length, 1);
+
+				Flags.get(payload.flags[0].flagId, (err, flagData) => {
+					assert.ifError(err);
+					assert.equal(payload.flags[0].flagId, flagData.flagId);
+					assert.equal(payload.flags[0].description, flagData.description);
+					done();
+				});
+			});
+		});
+
+		describe('(with filters)', () => {
+			it('should return a filtered list of flags if said filters are passed in', (done) => {
+				Flags.list({
+					filters: {
+						state: 'open',
+					},
+					uid: 1,
+				}, (err, payload) => {
+					assert.ifError(err);
+					assert.ok(payload.hasOwnProperty('flags'));
+					assert.ok(payload.hasOwnProperty('page'));
+					assert.ok(payload.hasOwnProperty('pageCount'));
+					assert.ok(Array.isArray(payload.flags));
+					assert.strictEqual(1, parseInt(payload.flags[0].flagId, 10));
+					done();
+				});
+			});
+
+			it('should return no flags if a filter with no matching flags is used', (done) => {
+				Flags.list({
+					filters: {
+						state: 'rejected',
+					},
+					uid: 1,
+				}, (err, payload) => {
+					assert.ifError(err);
+					assert.ok(payload.hasOwnProperty('flags'));
+					assert.ok(payload.hasOwnProperty('page'));
+					assert.ok(payload.hasOwnProperty('pageCount'));
+					assert.ok(Array.isArray(payload.flags));
+					assert.strictEqual(0, payload.flags.length);
+					done();
+				});
+			});
+
+			it('should return a flag when filtered by cid 1', (done) => {
+				Flags.list({
+					filters: {
+						cid: 1,
+					},
+					uid: 1,
+				}, (err, payload) => {
+					assert.ifError(err);
+					assert.ok(payload.hasOwnProperty('flags'));
+					assert.ok(payload.hasOwnProperty('page'));
+					assert.ok(payload.hasOwnProperty('pageCount'));
+					assert.ok(Array.isArray(payload.flags));
+					assert.strictEqual(1, payload.flags.length);
+					done();
+				});
+			});
+
+			it('shouldn\'t return a flag when filtered by cid 2', (done) => {
+				Flags.list({
+					filters: {
+						cid: 2,
+					},
+					uid: 1,
+				}, (err, payload) => {
+					assert.ifError(err);
+					assert.ok(payload.hasOwnProperty('flags'));
+					assert.ok(payload.hasOwnProperty('page'));
+					assert.ok(payload.hasOwnProperty('pageCount'));
+					assert.ok(Array.isArray(payload.flags));
+					assert.strictEqual(0, payload.flags.length);
+					done();
+				});
+			});
+
+			it('should return a flag when filtered by both cid 1 and 2', (done) => {
+				Flags.list({
+					filters: {
+						cid: [1, 2],
+					},
+					uid: 1,
+				}, (err, payload) => {
+					assert.ifError(err);
+					assert.ok(payload.hasOwnProperty('flags'));
+					assert.ok(payload.hasOwnProperty('page'));
+					assert.ok(payload.hasOwnProperty('pageCount'));
+					assert.ok(Array.isArray(payload.flags));
+					assert.strictEqual(1, payload.flags.length);
+					done();
+				});
+			});
+
+			it('should return one flag if filtered by both cid 1 and 2 and open state', (done) => {
+				Flags.list({
+					filters: {
+						cid: [1, 2],
+						state: 'open',
+					},
+					uid: 1,
+				}, (err, payload) => {
+					assert.ifError(err);
+					assert.ok(payload.hasOwnProperty('flags'));
+					assert.ok(payload.hasOwnProperty('page'));
+					assert.ok(payload.hasOwnProperty('pageCount'));
+					assert.ok(Array.isArray(payload.flags));
+					assert.strictEqual(1, payload.flags.length);
+					done();
+				});
+			});
+
+			it('should return no flag if filtered by both cid 1 and 2 and non-open state', (done) => {
+				Flags.list({
+					filters: {
+						cid: [1, 2],
+						state: 'resolved',
+					},
+					uid: 1,
+				}, (err, payload) => {
+					assert.ifError(err);
+					assert.ok(payload.hasOwnProperty('flags'));
+					assert.ok(payload.hasOwnProperty('page'));
+					assert.ok(payload.hasOwnProperty('pageCount'));
+					assert.ok(Array.isArray(payload.flags));
+					assert.strictEqual(0, payload.flags.length);
+					done();
+				});
+			});
+		});
+
+		describe('(with sort)', () => {
+			before(async () => {
+				// Create a second flag to test sorting
+				const post = await Topics.reply({
+					tid: 1,
+					uid: uid1,
+					content: 'this is a reply -- flag me',
+				});
+				await Flags.create('post', post.pid, adminUid, 'another flag');
+				await Flags.create('post', 1, uid3, 'additional flag report');
+			});
+
+			it('should return sorted flags latest first if no sort is passed in', async () => {
+				const payload = await Flags.list({
+					uid: adminUid,
+				});
+
+				assert(payload.flags.every((cur, idx) => {
+					if (idx === payload.flags.length - 1) {
+						return true;
+					}
+
+					const next = payload.flags[idx + 1];
+					return parseInt(cur.datetime, 10) > parseInt(next.datetime, 10);
+				}));
+			});
+
+			it('should return sorted flags oldest first if "oldest" sort is passed in', async () => {
+				const payload = await Flags.list({
+					uid: adminUid,
+					sort: 'oldest',
+				});
+
+				assert(payload.flags.every((cur, idx) => {
+					if (idx === payload.flags.length - 1) {
+						return true;
+					}
+
+					const next = payload.flags[idx + 1];
+					return parseInt(cur.datetime, 10) < parseInt(next.datetime, 10);
+				}));
+			});
+
+			it('should return flags with more reports first if "reports" sort is passed in', async () => {
+				const payload = await Flags.list({
+					uid: adminUid,
+					sort: 'reports',
+				});
+
+				assert(payload.flags.every((cur, idx) => {
+					if (idx === payload.flags.length - 1) {
+						return true;
+					}
+
+					const next = payload.flags[idx + 1];
+					return parseInt(cur.heat, 10) >= parseInt(next.heat, 10);
+				}));
+			});
+		});
+	});
+
+	describe('.update()', () => {
+		it('should alter a flag\'s various attributes and persist them to the database', (done) => {
+			Flags.update(1, adminUid, {
+				state: 'wip',
+				assignee: adminUid,
+			}, (err) => {
+				assert.ifError(err);
+				db.getObjectFields('flag:1', ['state', 'assignee'], (err, data) => {
+					if (err) {
+						throw err;
+					}
+
+					assert.strictEqual('wip', data.state);
+					assert.ok(!isNaN(parseInt(data.assignee, 10)));
+					assert.strictEqual(adminUid, parseInt(data.assignee, 10));
+					done();
+				});
+			});
+		});
+
+		it('should persist to the flag\'s history', (done) => {
+			Flags.getHistory(1, (err, history) => {
+				if (err) {
+					throw err;
+				}
+
+				history.forEach((change) => {
+					switch (change.attribute) {
+						case 'state':
+							assert.strictEqual('[[flags:state-wip]]', change.value);
+							break;
+
+						case 'assignee':
+							assert.strictEqual(1, change.value);
+							break;
+					}
+				});
+
+				done();
+			});
+		});
+
+		it('should allow assignment if user is an admin and do nothing otherwise', async () => {
+			await Flags.update(1, adminUid, {
+				assignee: adminUid,
+			});
+			let assignee = await db.getObjectField('flag:1', 'assignee');
+			assert.strictEqual(adminUid, parseInt(assignee, 10));
+
+			await Flags.update(1, adminUid, {
+				assignee: uid3,
+			});
+			assignee = await db.getObjectField('flag:1', 'assignee');
+			assert.strictEqual(adminUid, parseInt(assignee, 10));
+		});
+
+		it('should allow assignment if user is a global mod and do nothing otherwise', async () => {
+			await Groups.join('Global Moderators', uid3);
+
+			await Flags.update(1, uid3, {
+				assignee: uid3,
+			});
+			let assignee = await db.getObjectField('flag:1', 'assignee');
+			assert.strictEqual(uid3, parseInt(assignee, 10));
+
+			await Flags.update(1, uid3, {
+				assignee: uid1,
+			});
+			assignee = await db.getObjectField('flag:1', 'assignee');
+			assert.strictEqual(uid3, parseInt(assignee, 10));
+
+			await Groups.leave('Global Moderators', uid3);
+		});
+
+		it('should allow assignment if user is a mod of the category, do nothing otherwise', async () => {
+			await Groups.join(`cid:${category.cid}:privileges:moderate`, uid3);
+
+			await Flags.update(1, uid3, {
+				assignee: uid3,
+			});
+			let assignee = await db.getObjectField('flag:1', 'assignee');
+			assert.strictEqual(uid3, parseInt(assignee, 10));
+
+			await Flags.update(1, uid3, {
+				assignee: uid1,
+			});
+			assignee = await db.getObjectField('flag:1', 'assignee');
+			assert.strictEqual(uid3, parseInt(assignee, 10));
+
+			await Groups.leave(`cid:${category.cid}:privileges:moderate`, uid3);
+		});
+
+		it('should unassign the flag and record it in the flag history', async () => {
+			await Flags.update(1, adminUid, {
+				assignee: adminUid,
+			});
+			assert.strictEqual(true, await db.isSortedSetMember(`flags:byAssignee:${adminUid}`, 1));
+
+			await Flags.update(1, adminUid, {
+				assignee: '',
+			});
+			assert.strictEqual(false, await db.isSortedSetMember(`flags:byAssignee:${adminUid}`, 1));
+			assert.strictEqual('', await db.getObjectField('flag:1', 'assignee'));
+
+			const history = await Flags.getHistory(1);
+			const changes = history
+				.filter(entry => entry.fields && entry.fields.hasOwnProperty('assignee'))
+				.map(entry => entry.fields.assignee);
+			assert.ok(changes.includes('[[flags:no-assignee]]'));
+			assert.ok(!changes.includes('[[global:guest]]'));
+		});
+
+		it('should not assign a chat message flag to a global moderator', async () => {
+			const globalModUid = await User.create({ username: 'message-flag-assignee' });
+			await Groups.join('Global Moderators', globalModUid);
+
+			const roomId = await messaging.newRoom(uid1, { uids: [uid3] });
+			const { mid } = await messaging.sendMessage({ uid: uid3, roomId, content: 'private chat content' });
+			const { flagId } = await Flags.create('message', mid, uid1, 'spam');
+
+			await Flags.update(flagId, adminUid, {
+				assignee: globalModUid,
+			});
+			assert.strictEqual(false, await Flags.canView(flagId, globalModUid));
+			assert.notStrictEqual(String(globalModUid), String(await db.getObjectField(`flag:${flagId}`, 'assignee')));
+
+			await Flags.update(flagId, adminUid, {
+				assignee: adminUid,
+			});
+			assert.strictEqual(String(adminUid), String(await db.getObjectField(`flag:${flagId}`, 'assignee')));
+		});
+
+		it('should do nothing when you attempt to set a bogus state', async () => {
+			await Flags.update(1, adminUid, {
+				state: 'hocus pocus',
+			});
+
+			const state = await db.getObjectField('flag:1', 'state');
+			assert.strictEqual('wip', state);
+		});
+
+		describe('resolve/reject', () => {
+			let result;
+			let flagObj;
+			beforeEach(async () => {
+				result = await Topics.post({
+					cid: category.cid,
+					uid: uid3,
+					title: 'Topic to flag',
+					content: 'This is flaggable content',
+				});
+				flagObj = await api.flags.create({ uid: uid1 }, { type: 'post', id: result.postData.pid, reason: 'spam' });
+				await sleep(2000);
+			});
+
+			it('should rescind notification if flag is resolved', async () => {
+				let userNotifs = await User.notifications.getAll(adminUid);
+				assert(userNotifs.includes(`flag:post:${result.postData.pid}:${uid1}`));
+
+				await Flags.update(flagObj.flagId, adminUid, {
+					state: 'resolved',
+				});
+
+				userNotifs = await User.notifications.getAll(adminUid);
+				assert(!userNotifs.includes(`flag:post:${result.postData.pid}:${uid1}`));
+			});
+
+			it('should rescind notification if flag is rejected', async () => {
+				let userNotifs = await User.notifications.getAll(adminUid);
+				assert(userNotifs.includes(`flag:post:${result.postData.pid}:${uid1}`));
+
+				await Flags.update(flagObj.flagId, adminUid, {
+					state: 'rejected',
+				});
+
+				userNotifs = await User.notifications.getAll(adminUid);
+				assert(!userNotifs.includes(`flag:post:${result.postData.pid}:${uid1}`));
+			});
+
+			it('should do nothing if flag is resolved but ACP action is not "rescind"', async () => {
+				Meta.config['flags:actionOnResolve'] = '';
+
+				let userNotifs = await User.notifications.getAll(adminUid);
+				assert(userNotifs.includes(`flag:post:${result.postData.pid}:${uid1}`));
+
+				await Flags.update(flagObj.flagId, adminUid, {
+					state: 'resolved',
+				});
+
+				userNotifs = await User.notifications.getAll(adminUid);
+				assert(userNotifs.includes(`flag:post:${result.postData.pid}:${uid1}`));
+
+				delete Meta.config['flags:actionOnResolve'];
+			});
+
+			it('should do nothing if flag is rejected but ACP action is not "rescind"', async () => {
+				Meta.config['flags:actionOnReject'] = '';
+
+				let userNotifs = await User.notifications.getAll(adminUid);
+				assert(userNotifs.includes(`flag:post:${result.postData.pid}:${uid1}`));
+
+				await Flags.update(flagObj.flagId, adminUid, {
+					state: 'rejected',
+				});
+
+				userNotifs = await User.notifications.getAll(adminUid);
+				assert(userNotifs.includes(`flag:post:${result.postData.pid}:${uid1}`));
+
+				delete Meta.config['flags:actionOnReject'];
+			});
+		});
+	});
+
+	describe('.markNotificationsRead()', () => {
+		let result;
+		let flagObj;
+		let nid;
+		let unreadSet;
+		let readSet;
+
+		beforeEach(async () => {
+			result = await Topics.post({
+				cid: category.cid,
+				uid: uid3,
+				title: 'Topic to flag',
+				content: 'This is flaggable content',
+			});
+			flagObj = await api.flags.create({ uid: uid1 }, { type: 'post', id: result.postData.pid, reason: 'spam' });
+			nid = `flag:post:${result.postData.pid}:${uid1}`;
+			unreadSet = `uid:${adminUid}:notifications:unread`;
+			readSet = `uid:${adminUid}:notifications:read`;
+			await sleep(2000);
+		});
+
+		it('should store the flagId on the flag notification', async () => {
+			const [notifObj] = await notifications.getMultiple([nid]);
+			assert.strictEqual(notifObj.flagId, flagObj.flagId);
+		});
+
+		it('should mark the flag notification as read', async () => {
+			assert(await db.isSortedSetMember(unreadSet, nid));
+
+			await Flags.markNotificationsRead(flagObj.flagId, adminUid);
+
+			assert(!await db.isSortedSetMember(unreadSet, nid));
+			assert(await db.isSortedSetMember(readSet, nid));
+		});
+
+		it('should mark the flag notification as read when the flag detail page is viewed', async () => {
+			const { jar: adminJar } = await helpers.loginUser('testUser2', 'abcdef');
+			assert(await db.isSortedSetMember(unreadSet, nid));
+
+			const { response } = await request.get(`${nconf.get('url')}/flags/${flagObj.flagId}`, { jar: adminJar });
+			assert.strictEqual(response.statusCode, 200);
+
+			assert(!await db.isSortedSetMember(unreadSet, nid));
+			assert(await db.isSortedSetMember(readSet, nid));
+		});
+
+		it('should not touch notifications of a user who never received one', async () => {
+			assert(!await db.isSortedSetMember(`uid:${uid3}:notifications:unread`, nid));
+			await Flags.markNotificationsRead(flagObj.flagId, uid3);
+			assert(!await db.isSortedSetMember(`uid:${uid3}:notifications:read`, nid));
+		});
+	});
+
+	describe('.notify()', () => {
+		it('should only notify administrators of a chat message flag', async () => {
+			const globalModUid = await User.create({ username: 'message-flag-global-mod' });
+			await Groups.join('Global Moderators', globalModUid);
+
+			const roomId = await messaging.newRoom(uid1, { uids: [uid3] });
+			const { mid } = await messaging.sendMessage({ uid: uid3, roomId, content: 'private chat content' });
+			await api.flags.create({ uid: uid1 }, { type: 'message', id: mid, reason: 'spam', roomId });
+			await sleep(2000);
+
+			const nid = `flag:message:${mid}:${uid1}`;
+			assert(await db.isSortedSetMember(`uid:${adminUid}:notifications:unread`, nid));
+			assert(!await db.isSortedSetMember(`uid:${globalModUid}:notifications:unread`, nid));
+		});
+	});
+
+	describe('.getTarget()', () => {
+		it('should return a post\'s data if queried with type "post"', (done) => {
+			Flags.getTarget('post', 1, 1, (err, data) => {
+				assert.ifError(err);
+				const compare = {
+					uid: 1,
+					pid: 1,
+					content: 'This is flaggable content',
+				};
+
+				for (const key of Object.keys(compare)) {
+					assert.ok(data[key]);
+					assert.equal(data[key], compare[key]);
+				}
+
+				done();
+			});
+		});
+
+		it('should return a user\'s data if queried with type "user"', (done) => {
+			Flags.getTarget('user', 1, 1, (err, data) => {
+				assert.ifError(err);
+				const compare = {
+					uid: 1,
+					username: 'testUser',
+					email: 'b@c.com',
+				};
+
+				for (const key of Object.keys(compare)) {
+					assert.ok(data[key]);
+					assert.equal(data[key], compare[key]);
+				}
+
+				done();
+			});
+		});
+
+		it('should return a plain object with no properties if the target no longer exists', (done) => {
+			Flags.getTarget('user', 15, 1, (err, data) => {
+				assert.ifError(err);
+				assert.strictEqual(0, Object.keys(data).length);
+				done();
+			});
+		});
+	});
+
+	describe('.canFlag()', () => {
+		it('should reject the flag that would exceed the daily limit', async () => {
+			await Meta.configs.set('flags:postFlagsPerDay', 2);
+			const reporterUid = await User.create({ username: 'dailylimitreporter' });
+			const authorUid = await User.create({ username: 'dailylimitauthor' });
+			const pids = [];
+			for (let i = 0; i < 3; i++) {
+				// eslint-disable-next-line no-await-in-loop
+				const data = await Topics.post({
+					cid: category.cid,
+					uid: authorUid,
+					title: `Daily flag limit topic ${i}`,
+					content: 'This is flaggable content',
+				});
+				pids.push(data.postData.pid);
+			}
+
+			await Flags.create('post', pids[0], reporterUid, 'spam');
+			await Flags.create('post', pids[1], reporterUid, 'spam');
+
+			await assert.rejects(
+				Flags.canFlag('post', pids[2], reporterUid),
+				{ message: '[[error:too-many-post-flags-per-day, 2]]' }
+			);
+
+			await Meta.configs.set('flags:postFlagsPerDay', 10);
+		});
+
+		it('should not limit flags when the daily limit is 0', async () => {
+			await Meta.configs.set('flags:postFlagsPerDay', 0);
+			const reporterUid = await User.create({ username: 'unlimitedreporter' });
+			const authorUid = await User.create({ username: 'unlimitedauthor' });
+			for (let i = 0; i < 3; i++) {
+				// eslint-disable-next-line no-await-in-loop
+				const data = await Topics.post({
+					cid: category.cid,
+					uid: authorUid,
+					title: `Unlimited flag topic ${i}`,
+					content: 'This is flaggable content',
+				});
+				// eslint-disable-next-line no-await-in-loop
+				await Flags.create('post', data.postData.pid, reporterUid, 'spam');
+			}
+
+			const flagIds = await db.getSortedSetRange(`flags:byReporter:${reporterUid}`, 0, -1);
+			assert.strictEqual(flagIds.length, 3);
+
+			await Meta.configs.set('flags:postFlagsPerDay', 10);
+		});
+	});
+
+	describe('.validate()', () => {
+		it('should error out if type is post and post is deleted', (done) => {
+			Posts.delete(1, 1, (err) => {
+				if (err) {
+					throw err;
+				}
+
+				Flags.validate({
+					type: 'post',
+					id: 1,
+					uid: 1,
+				}, (err) => {
+					assert.ok(err);
+					assert.strictEqual('[[error:post-deleted]]', err.message);
+					Posts.restore(1, 1, done);
+				});
+			});
+		});
+
+		it('should not pass validation if flag threshold is set and user rep does not meet it', (done) => {
+			Meta.configs.set('min:rep:flag', '50', (err) => {
+				assert.ifError(err);
+
+				Flags.validate({
+					type: 'post',
+					id: 1,
+					uid: 3,
+				}, (err) => {
+					assert.ok(err);
+					assert.strictEqual('[[error:not-enough-reputation-to-flag, 50]]', err.message);
+					Meta.configs.set('min:rep:flag', 0, done);
+				});
+			});
+		});
+
+		it('should not error if user blocked target', async () => {
+			const apiFlags = require('../src/api/flags');
+			const reporterUid = await User.create({ username: 'reporter' });
+			const reporteeUid = await User.create({ username: 'reportee' });
+			await User.blocks.add(reporteeUid, reporterUid);
+			const data = await Topics.post({
+				cid: 1,
+				uid: reporteeUid,
+				title: 'Another topic',
+				content: 'This is flaggable content',
+			});
+			await apiFlags.create({ uid: reporterUid }, {
+				type: 'post',
+				id: data.postData.pid,
+				reason: 'spam',
+			});
+		});
+
+		it('should send back error if reporter does not exist', (done) => {
+			Flags.validate({ uid: 123123123, id: 1, type: 'post' }, (err) => {
+				assert.equal(err.message, '[[error:no-user]]');
+				done();
+			});
+		});
+	});
+
+	describe('.appendNote()', () => {
+		it('should add a note to a flag', (done) => {
+			Flags.appendNote(1, 1, 'this is my note', (err) => {
+				assert.ifError(err);
+
+				db.getSortedSetRange('flag:1:notes', 0, -1, (err, notes) => {
+					if (err) {
+						throw err;
+					}
+
+					assert.strictEqual('[1,"this is my note"]', notes[0]);
+					setTimeout(done, 10);
+				});
+			});
+		});
+
+		it('should be a JSON string', (done) => {
+			db.getSortedSetRange('flag:1:notes', 0, -1, (err, notes) => {
+				if (err) {
+					throw err;
+				}
+
+				try {
+					JSON.parse(notes[0]);
+				} catch (e) {
+					assert.ifError(e);
+				}
+
+				done();
+			});
+		});
+
+		it('should insert a note in the past if a datetime is passed in', async () => {
+			await Flags.appendNote(1, 1, 'this is the first note', 1626446956652);
+			const note = (await db.getSortedSetRange('flag:1:notes', 0, 0)).pop();
+			assert.strictEqual('[1,"this is the first note"]', note);
+		});
+	});
+
+	describe('.getNotes()', () => {
+		before((done) => {
+			// Add a second note
+			Flags.appendNote(1, 1, 'this is the second note', done);
+		});
+
+		it('return should match a predefined spec', (done) => {
+			Flags.getNotes(1, (err, notes) => {
+				assert.ifError(err);
+				const compare = {
+					uid: 1,
+					content: 'this is my note',
+				};
+
+				const data = notes[1];
+				for (const key of Object.keys(compare)) {
+					assert.ok(data[key]);
+					assert.strictEqual(data[key], compare[key]);
+				}
+
+				done();
+			});
+		});
+
+		it('should retrieve a list of notes, from newest to oldest', (done) => {
+			Flags.getNotes(1, (err, notes) => {
+				assert.ifError(err);
+				assert(notes[0].datetime > notes[1].datetime, `${notes[0].datetime}-${notes[1].datetime}`);
+				assert.strictEqual('this is the second note', notes[0].content);
+				done();
+			});
+		});
+	});
+
+	describe('.appendHistory()', () => {
+		let entries;
+		before((done) => {
+			db.sortedSetCard('flag:1:history', (err, count) => {
+				entries = count;
+				done(err);
+			});
+		});
+
+		it('should add a new entry into a flag\'s history', (done) => {
+			Flags.appendHistory(1, 1, {
+				state: 'rejected',
+			}, (err) => {
+				assert.ifError(err);
+
+				Flags.getHistory(1, (err, history) => {
+					if (err) {
+						throw err;
+					}
+
+					// 1 for the new event appended, 2 for username/email change
+					assert.strictEqual(entries + 3, history.length);
+					done();
+				});
+			});
+		});
+	});
+
+	describe('.getHistory()', () => {
+		it('should retrieve a flag\'s history', (done) => {
+			Flags.getHistory(1, (err, history) => {
+				assert.ifError(err);
+				assert.strictEqual(history[0].fields.state, '[[flags:state-rejected]]');
+				done();
+			});
+		});
+
+		it('should label registration details as such, not as changes', async () => {
+			const history = await Flags.getHistory(1);
+			const keys = history
+				.filter(entry => entry.meta)
+				.reduce((memo, entry) => memo.concat(entry.meta.map(item => item.key)), []);
+
+			assert.ok(keys.includes('[[flags:registered-username]]'));
+			assert.ok(!keys.includes('[[user:change-username]]'));
+			assert.ok(!keys.includes('[[user:change-email]]'));
+		});
+	});
+
+	describe('(v3 API)', () => {
+		let pid;
+		let tid;
+		let jar;
+		let csrfToken;
+		before(async () => {
+			const login = await helpers.loginUser('testUser2', 'abcdef');
+			jar = login.jar;
+			csrfToken = login.csrf_token;
+
+			const result = await Topics.post({
+				cid: 1,
+				uid: 1,
+				title: 'Another topic',
+				content: 'This is flaggable content',
+			});
+			pid = result.postData.pid;
+			tid = result.topicData.tid;
+		});
+
+		describe('.create()', () => {
+			it('should create a flag with no errors', async () => {
+				await request.post(`${nconf.get('url')}/api/v3/flags`, {
+					jar,
+					headers: {
+						'x-csrf-token': csrfToken,
+					},
+					body: {
+						type: 'post',
+						id: pid,
+						reason: 'foobar',
+					},
+				});
+
+				const exists = await Flags.exists('post', pid, 2);
+				assert(exists);
+			});
+
+			it('should escape flag reason and not translate it', async () => {
+				const postData = await Topics.reply({
+					tid: tid,
+					uid: 1,
+					content: 'This is flaggable content',
+				});
+
+				const { body } = await request.post(`${nconf.get('url')}/api/v3/flags`, {
+					jar,
+					headers: {
+						'x-csrf-token': csrfToken,
+					},
+					body: {
+						type: 'post',
+						id: postData.pid,
+						reason: '"<script>alert(\'ok\');</script> [[global:votes]]',
+					},
+				});
+
+				const flagData = await Flags.get(body.response.flagId);
+				// unescape in api
+				assert.strictEqual(flagData.reports[0].value, '"<script>alert(\'ok\');</script> [[global:votes]]');
+
+				// escaped in html
+				const { body: body2 } = await request.get(`${nconf.get('url')}/flags/${body.response.flagId}`, {
+					jar, body: {},
+				});
+				assert(body2.includes('&quot;&lt;script&gt;alert(&#x27;ok&#x27;);&lt;/script&gt; [[global:votes]]'));
+			});
+
+			it('should return undefined for invalid filters', async () => {
+				const { body } = await request.get(`${nconf.get('url')}/api/flags?quick="<script>alert('foo');</script>`, { jar });
+				assert.strictEqual(body.filters.quick, undefined);
+			});
+
+			it('should not allow flagging post in private category', async () => {
+				const category = await Categories.create({ name: 'private category' });
+
+				await Privileges.categories.rescind(['groups:topics:read'], category.cid, 'registered-users');
+				await Groups.join('private category', uid3);
+				const result = await Topics.post({
+					cid: category.cid,
+					uid: uid3,
+					title: 'private topic',
+					content: 'private post',
+				});
+				const login = await helpers.loginUser('unprivileged', 'abcdef');
+				const jar3 = login.jar;
+				const csrfToken = await helpers.getCsrfToken(jar3);
+
+				const { response, body } = await request.post(`${nconf.get('url')}/api/v3/flags`, {
+					jar: jar3,
+					headers: {
+						'x-csrf-token': csrfToken,
+					},
+					body: {
+						type: 'post',
+						id: result.postData.pid,
+						reason: 'foobar',
+					},
+				});
+				assert.strictEqual(response.statusCode, 403);
+
+				// Handle dev mode test
+				delete body.stack;
+
+				assert.deepStrictEqual(body, {
+					status: {
+						code: 'forbidden',
+						message: 'You do not have enough privileges for this action.',
+					},
+					response: {},
+				});
+			});
+		});
+
+		describe('.update()', () => {
+			it('should update a flag\'s properties', async () => {
+				const { body } = await request.put(`${nconf.get('url')}/api/v3/flags/4`, {
+					jar,
+					headers: {
+						'x-csrf-token': csrfToken,
+					},
+					body: {
+						state: 'wip',
+					},
+				});
+
+				const { history } = body.response;
+				assert(Array.isArray(history));
+				assert(history[0].fields.hasOwnProperty('state'));
+				assert.strictEqual('[[flags:state-wip]]', history[0].fields.state);
+			});
+		});
+
+		describe('.rescind()', () => {
+			it('should remove a flag\'s report', async () => {
+				const { response } = await request.del(`${nconf.get('url')}/api/v3/flags/4/report`, {
+					jar,
+					headers: {
+						'x-csrf-token': csrfToken,
+					},
+				});
+
+				assert.strictEqual(response.statusCode, 200);
+			});
+		});
+
+		describe('.appendNote()', () => {
+			it('should append a note to the flag', async () => {
+				const { body } = await request.post(`${nconf.get('url')}/api/v3/flags/4/notes`, {
+					jar,
+					headers: {
+						'x-csrf-token': csrfToken,
+					},
+					body: {
+						note: 'lorem ipsum dolor sit amet',
+						datetime: 1626446956652,
+					},
+				});
+				const { response } = body;
+				assert(response.hasOwnProperty('notes'));
+				assert(Array.isArray(response.notes));
+				assert.strictEqual('lorem ipsum dolor sit amet', response.notes[0].content);
+				assert.strictEqual(2, response.notes[0].uid);
+
+				assert(response.hasOwnProperty('history'));
+				assert(Array.isArray(response.history));
+				assert.strictEqual(1, Object.keys(response.history[response.history.length - 1].fields).length);
+				assert(response.history[response.history.length - 1].fields.hasOwnProperty('notes'));
+			});
+		});
+
+		describe('.deleteNote()', () => {
+			it('should delete a note from a flag', async () => {
+				const { body } = await request.del(`${nconf.get('url')}/api/v3/flags/4/notes/1626446956652`, {
+					jar,
+					headers: {
+						'x-csrf-token': csrfToken,
+					},
+				});
+				const { response } = body;
+				assert(Array.isArray(response.history));
+				assert(Array.isArray(response.notes));
+				assert.strictEqual(response.notes.length, 0);
+			});
+		});
+
+		describe('access control', () => {
+			let uid;
+			let jar;
+			let csrf_token;
+			let requests;
+
+			let flaggerUid;
+			let flagId;
+
+			const noteTime = Date.now();
+
+			before(async () => {
+				uid = await User.create({ username: 'flags-access-control', password: 'abcdef' });
+				({ jar, csrf_token } = await helpers.loginUser('flags-access-control', 'abcdef'));
+				flaggerUid = await User.create({ username: 'flags-access-control-flagger', password: 'abcdef' });
+			});
+
+			beforeEach(async () => {
+				// Reset uid back to unprivileged user
+				await Groups.leave('administrators', uid);
+				await Groups.leave('Global Moderators', uid);
+				await Privileges.categories.rescind(['moderate'], 1, [uid]);
+
+				const { postData } = await Topics.post({
+					uid,
+					cid: 1,
+					title: utils.generateUUID(),
+					content: utils.generateUUID(),
+				});
+
+				({ flagId } = await Flags.create('post', postData.pid, flaggerUid, 'spam'));
+				const commonOpts = {
+					jar,
+					headers: {
+						'x-csrf-token': csrf_token,
+					},
+				};
+				requests = new Set([
+					{
+						...commonOpts,
+						method: 'get',
+						uri: `${nconf.get('url')}/api/v3/flags/${flagId}`,
+					},
+					{
+						...commonOpts,
+						method: 'put',
+						uri: `${nconf.get('url')}/api/v3/flags/${flagId}`,
+						body: {
+							state: 'wip',
+						},
+					},
+					{
+						...commonOpts,
+						method: 'post',
+						uri: `${nconf.get('url')}/api/v3/flags/${flagId}/notes`,
+						body: {
+							note: 'test note',
+							datetime: noteTime,
+						},
+					},
+					{
+						...commonOpts,
+						method: 'delete',
+						uri: `${nconf.get('url')}/api/v3/flags/${flagId}/notes/${noteTime}`,
+					},
+					{
+						...commonOpts,
+						method: 'delete',
+						uri: `${nconf.get('url')}/api/v3/flags/${flagId}`,
+					},
+				]);
+			});
+
+			it('should not allow access to privileged flag endpoints to guests', async () => {
+				for (let opts of requests) {
+					opts = { ...opts };
+					delete opts.jar;
+					delete opts.headers;
+
+					// eslint-disable-next-line no-await-in-loop
+					const { response } = await request[opts.method](opts.uri, opts);
+					const { statusCode } = response;
+					assert(statusCode.toString().startsWith(4), `${opts.method.toUpperCase()} ${opts.uri} => ${statusCode}`);
+				}
+			});
+
+			it('should not allow access to privileged flag endpoints to regular users', async () => {
+				for (const opts of requests) {
+					// eslint-disable-next-line no-await-in-loop
+					const { response } = await request[opts.method](opts.uri, opts);
+					const { statusCode } = response;
+					assert(statusCode.toString().startsWith(4), `${opts.method.toUpperCase()} ${opts.uri} => ${statusCode}`);
+				}
+			});
+
+			it('should allow access to privileged endpoints to administrators', async () => {
+				await Groups.join('administrators', uid);
+
+				for (const opts of requests) {
+					// eslint-disable-next-line no-await-in-loop
+					const { response } = await request[opts.method](opts.uri, opts);
+					const { statusCode } = response;
+					assert.strictEqual(statusCode, 200, `${opts.method.toUpperCase()} ${opts.uri} => ${statusCode}`);
+				}
+			});
+
+			it('should allow access to privileged endpoints to global moderators', async () => {
+				await Groups.join('Global Moderators', uid);
+
+				for (const opts of requests) {
+					// eslint-disable-next-line no-await-in-loop
+					const { response } = await request[opts.method](opts.uri, opts);
+					const { statusCode } = response;
+					assert.strictEqual(statusCode, 200, `${opts.method.toUpperCase()} ${opts.uri} => ${statusCode}`);
+				}
+			});
+
+			it('should allow access to privileged endpoints to moderators if the flag target is a post in a cid they moderate', async () => {
+				await Privileges.categories.give(['moderate'], 1, [uid]);
+
+				for (const opts of requests) {
+					// eslint-disable-next-line no-await-in-loop
+					const { response } = await request[opts.method](opts.uri, opts);
+					const { statusCode } = response;
+					assert.strictEqual(statusCode, 200, `${opts.method.toUpperCase()} ${opts.uri} => ${statusCode}`);
+				}
+			});
+
+			it('should NOT allow access to privileged endpoints to moderators if the flag target is a post in a cid they DO NOT moderate', async () => {
+				// This is a new category the user will moderate, but the flagged post is in a different category
+				const { cid } = await Categories.create({
+					name: utils.generateUUID(),
+				});
+				await Privileges.categories.give(['moderate'], cid, [uid]);
+
+				for (const opts of requests) {
+					// eslint-disable-next-line no-await-in-loop
+					const { response } = await request[opts.method](opts.uri, opts);
+					const { statusCode } = response;
+					assert(statusCode.toString().startsWith(4), `${opts.method.toUpperCase()} ${opts.uri} => ${statusCode}`);
+				}
+			});
+		});
+
+		describe('remote (federated) chat messages', () => {
+			let uid1;
+			let uid2;
+			let actor;
+			let mid;
+			let roomId;
+			let flagId;
+
+			before(async () => {
+				Meta.config.activitypubEnabled = 1;
+				await Privileges.global.give(['groups:chat', 'groups:chat:privileged'], 'fediverse');
+
+				uid1 = await User.create({ username: utils.generateUUID().slice(0, 10) });
+				uid2 = await User.create({ username: utils.generateUUID().slice(0, 10) });
+				({ id: actor } = apHelpers.mocks.person());
+
+				// Remote actor sends a DM to two local users; both become room members
+				const { note } = apHelpers.mocks.note({
+					attributedTo: actor,
+					to: [
+						`${nconf.get('url')}/uid/${uid1}`,
+						`${nconf.get('url')}/uid/${uid2}`,
+					],
+					cc: [],
+				});
+				const { activity } = apHelpers.mocks.create({
+					actor,
+					object: note,
+					to: [
+						`${nconf.get('url')}/uid/${uid1}`,
+						`${nconf.get('url')}/uid/${uid2}`,
+					],
+					cc: [],
+				});
+
+				await activitypub.inbox.create({ body: activity });
+				mid = note.id;
+				roomId = await messaging.getRoomIdByMid(mid);
+			});
+
+			after(async () => {
+				await Privileges.global.rescind(['groups:chat', 'groups:chat:privileged'], 'fediverse');
+				delete Meta.config.activitypubEnabled;
+			});
+
+			it('should store the remote message as a chat message with its ActivityPub URI as mid', async () => {
+				assert.ok(activitypub.helpers.isUri(mid));
+				assert.strictEqual(await messaging.messageExists(mid), true);
+				assert.strictEqual(await messaging.getMessageField(mid, 'fromuid'), actor);
+			});
+
+			it('should allow a room member to flag a remote message', async () => {
+				const flag = await api.flags.create({ uid: uid1 }, {
+					type: 'message',
+					id: mid,
+					roomId,
+					reason: 'spam',
+					notifyRemote: true,
+				});
+
+				flagId = flag.flagId;
+				assert.strictEqual(flag.type, 'message');
+				assert.strictEqual(flag.targetId, mid);
+				assert.strictEqual(flag.targetUid, actor);
+				assert.strictEqual(flag.reports.length, 1);
+				assert.strictEqual(flag.reports[0].value, 'spam');
+			});
+
+			it('should forward a Flag activity naming the remote message and its author', async () => {
+				const flagActivityId = `${nconf.get('url')}/message/${encodeURIComponent(mid)}#activity/flag/${uid1}`;
+				const sent = activitypub._sent.get(flagActivityId);
+				assert.ok(sent, 'Flag activity was sent');
+				assert.strictEqual(sent.payload.type, 'Flag');
+				assert.strictEqual(sent.payload.actor, `${nconf.get('url')}/uid/${uid1}`);
+				assert.strictEqual(sent.payload.content, 'spam');
+				assert.deepStrictEqual(sent.payload.object, [mid, actor]);
+			});
+
+			it('should store the flagId on the flagged message', async () => {
+				// Coerce both to string since PostgreSQL may return the flagId as a number
+				assert.strictEqual(String(await messaging.getMessageField(mid, 'flagId')), String(flagId));
+			});
+
+			it('should allow a second reporter to add their report to the existing flag', async () => {
+				const flag = await api.flags.create({ uid: uid2 }, {
+					type: 'message',
+					id: mid,
+					roomId,
+					reason: 'harassment',
+					notifyRemote: true,
+				});
+
+				assert.strictEqual(flag.flagId, flagId);
+				const reports = await Flags.getReports(flagId);
+				assert.strictEqual(reports.length, 2);
+			});
+
+			it('should forward a second Flag activity from the new reporter', async () => {
+				const flagActivityId = `${nconf.get('url')}/message/${encodeURIComponent(mid)}#activity/flag/${uid2}`;
+				const sent = activitypub._sent.get(flagActivityId);
+				assert.ok(sent, 'Flag activity was sent');
+				assert.strictEqual(sent.payload.content, 'harassment');
+				assert.deepStrictEqual(sent.payload.object, [mid, actor]);
+			});
+
+			it('should rescind a single report via API and send an Undo Flag', async () => {
+				await api.flags.rescind({ uid: uid2 }, { flagId });
+
+				const flag = await Flags.get(flagId);
+				const reports = await Flags.getReports(flagId);
+				assert.strictEqual(reports.length, 1);
+				assert.strictEqual(flag.targetId, mid);
+				assert.strictEqual(flag.targetUid, actor);
+
+				const undo = Array.from(activitypub._sent.values()).find(({ payload }) => {
+					return payload.type === 'Undo' && payload.object.id.endsWith(`#activity/flag/${uid2}`);
+				});
+				assert.ok(undo, 'Undo Flag activity was sent');
+				assert.strictEqual(undo.payload.object.type, 'Flag');
+				assert.deepStrictEqual(undo.payload.object.object, [mid, actor]);
+			});
+
+			it('should not allow a user who is not in the room to flag a remote message', async () => {
+				const outsider = await User.create({ username: utils.generateUUID().slice(0, 10) });
+
+				await assert.rejects(
+					api.flags.create({ uid: outsider }, {
+						type: 'message',
+						id: mid,
+						roomId,
+						reason: 'spam',
+					}),
+					{ message: '[[error:no-privileges]]' },
+				);
+			});
+
+			it('should send an Undo Flag for remaining reports and clean up when purged', async () => {
+				await Flags.purge([flagId]);
+
+				assert.strictEqual(await messaging.messageExists(mid), true);
+				assert.strictEqual(await messaging.getMessageField(mid, 'flagId'), null);
+				assert.strictEqual(await Flags.exists('message', mid, uid1), false);
+
+				const undo = Array.from(activitypub._sent.values()).find(({ payload }) => {
+					return payload.type === 'Undo' && payload.object.id.endsWith(`#activity/flag/${uid1}`);
+				});
+				assert.ok(undo, 'Undo Flag activity was sent');
+				assert.deepStrictEqual(undo.payload.object.object, [mid, actor]);
+			});
+		});
+
+	});
+
+	describe('user flag access', () => {
+		let globalModUid;
+		let userManagerUid;
+		let targetUid;
+		let flagId;
+		let globalModJar;
+		let userManagerJar;
+
+		before(async () => {
+			globalModUid = await User.create({ username: 'user-flag-global-mod', password: 'abcdef' });
+			await Groups.join('Global Moderators', globalModUid);
+			userManagerUid = await User.create({ username: 'user-flag-user-manager', password: 'abcdef' });
+			await Privileges.admin.give(['admin:users'], userManagerUid);
+			targetUid = await User.create({ username: 'user-flag-target' });
+
+			({ flagId } = await api.flags.create({ uid: uid1 }, { type: 'user', id: targetUid, reason: 'spam' }));
+			await sleep(2000);
+
+			({ jar: globalModJar } = await helpers.loginUser('user-flag-global-mod', 'abcdef'));
+			({ jar: userManagerJar } = await helpers.loginUser('user-flag-user-manager', 'abcdef'));
+		});
+
+		after(async () => {
+			await Privileges.admin.rescind(['admin:users'], userManagerUid);
+			await Groups.leave('Global Moderators', globalModUid);
+		});
+
+		it('should let admin:users holders view a user flag, but not global moderators', async () => {
+			assert.strictEqual(await Flags.canView(flagId, userManagerUid), true);
+			assert.strictEqual(await Flags.canView(flagId, globalModUid), false);
+			assert.strictEqual(await Flags.canView(flagId, adminUid), true);
+		});
+
+		it('should notify admin:users holders of a new user flag, but not global moderators', async () => {
+			const nid = `flag:user:${targetUid}:${uid1}`;
+			assert(await db.isSortedSetMember(`uid:${userManagerUid}:notifications:unread`, nid));
+			assert(await db.isSortedSetMember(`uid:${adminUid}:notifications:unread`, nid));
+			assert(!await db.isSortedSetMember(`uid:${globalModUid}:notifications:unread`, nid));
+		});
+
+		it('should open the flag detail page only for those who can view the flag', async () => {
+			let { response } = await request.get(`${nconf.get('url')}/api/flags/${flagId}`, { jar: userManagerJar });
+			assert.strictEqual(response.statusCode, 200);
+
+			({ response } = await request.get(`${nconf.get('url')}/api/flags/${flagId}`, { jar: globalModJar }));
+			assert.strictEqual(response.statusCode, 404);
+		});
+
+		it('should list user flags only to those who can view them', async () => {
+			const { body: managerList } = await request.get(`${nconf.get('url')}/api/flags`, { jar: userManagerJar });
+			assert(managerList.flags.some(flag => flag.flagId === flagId));
+			assert(managerList.flags.every(flag => flag.type === 'user'));
+
+			const { body: globalModList } = await request.get(`${nconf.get('url')}/api/flags`, { jar: globalModJar });
+			assert(globalModList.flags.every(flag => flag.type !== 'user'));
+
+			const { body: filteredList } = await request.get(`${nconf.get('url')}/api/flags?type=user`, { jar: globalModJar });
+			assert.strictEqual(filteredList.flags.length, 0);
+		});
+
+		it('should list both user flags and moderated category flags to a moderator who holds admin:users', async () => {
+			const { postData } = await Topics.post({
+				cid: category.cid,
+				uid: uid3,
+				title: utils.generateUUID(),
+				content: utils.generateUUID(),
+			});
+			const { flagId: postFlagId } = await Flags.create('post', postData.pid, uid1, 'spam');
+			await Privileges.admin.give(['admin:users'], moderatorUid);
+			try {
+				const { body } = await request.get(`${nconf.get('url')}/api/flags`, { jar });
+				const flagIds = body.flags.map(flag => flag.flagId);
+				assert(flagIds.includes(flagId));
+				assert(flagIds.includes(postFlagId));
+			} finally {
+				await Privileges.admin.rescind(['admin:users'], moderatorUid);
+			}
+		});
+
+		it('should let admin:users holders read and update a user flag through the write API', async () => {
+			let { response } = await helpers.request('get', `/api/v3/flags/${flagId}`, { jar: userManagerJar });
+			assert.strictEqual(response.statusCode, 200);
+
+			({ response } = await helpers.request('get', `/api/v3/flags/${flagId}`, { jar: globalModJar }));
+			assert.strictEqual(response.statusCode, 404);
+
+			await api.flags.update({ uid: userManagerUid }, { flagId, state: 'wip' });
+			assert.strictEqual(await db.getObjectField(`flag:${flagId}`, 'state'), 'wip');
+			await assert.rejects(
+				api.flags.update({ uid: globalModUid }, { flagId, state: 'resolved' }),
+				{ message: '[[error:no-privileges]]' }
+			);
+		});
+	});
+});

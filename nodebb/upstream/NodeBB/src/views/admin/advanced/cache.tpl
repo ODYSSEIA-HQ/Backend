@@ -1,0 +1,70 @@
+
+<div class="post-cache settings d-flex flex-column gap-2 px-lg-4">
+	<div class="d-flex border-bottom py-2 m-0 sticky-top acp-page-main-header align-items-center justify-content-between flex-wrap gap-2">
+		<div class="">
+			<h4 class="fw-bold tracking-tight mb-0">{{tx("admin/advanced/cache:cache")}}</h4>
+		</div>
+		<div class="d-flex align-items-center">
+			<button id="save" class="btn btn-primary btn-sm fw-semibold ff-secondary w-100 text-center text-nowrap">{{tx("admin/admin:save-changes")}}</button>
+		</div>
+	</div>
+
+	<div>
+		<div class="table-responsive">
+				<table id="cache-table" class="table table-sm text-sm">
+					<thead>
+						<tr>
+							<th><i class="fa-solid invisible fa-sort-down"></i> <a href="#" class="text-reset">name</a></th>
+							<th class="text-end"><i class="fa-solid invisible fa-sort-down"></i> <a href="#" class="text-reset">capacity</a></th>
+							<th class="text-end"><i class="fa-solid invisible fa-sort-down"></i> <a href="#" class="text-reset">count</a></th>
+							<th class="text-end"><i class="fa-solid invisible fa-sort-down"></i> <a href="#" class="text-reset">size</a></th>
+							<th class="text-end" data-sort="asc"><i class="fa-solid fa-sort-down"></i> <a href="#" class="text-reset">hits</a></th>
+							<th class="text-end"><i class="fa-solid invisible fa-sort-down"></i> <a href="#" class="text-reset">misses</a></th>
+							<th class="text-end"><i class="fa-solid invisible fa-sort-down"></i> <a href="#" class="text-reset">hit ratio</a></th>
+							<th class="text-end"><i class="fa-solid invisible fa-sort-down"></i> <a href="#" class="text-reset">hits/sec</a></th>
+							<th class="text-end"><i class="fa-solid invisible fa-sort-down"></i> <a href="#" class="text-reset">ttl</a></th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody class="text-xs text-tabular">
+					{{{ each caches }}}
+					<tr class="align-middle">
+						<td data-sort-value="{./name}">
+							<div class="d-flex gap-1 align-items-center">
+								<div class="form-check form-switch text-sm" data-name="{./name}" style="min-height: initial;">
+									<input class="form-check-input" type="checkbox" {{{if ./enabled}}}checked{{{end}}}>
+								</div>
+								{./name}
+							</div>
+						</td>
+						<td class="text-end" data-sort-value="{./percentFull}">{./percentFull}%</td>
+						<td class="text-end" data-sort-value="{{{if ./length}}}{./length}{{{else}}}{./itemCount}{{{end}}}">{{{if ./length}}}{./length}{{{else}}}{./itemCount}{{{end}}} </td>
+						<td class="text-end" data-sort-value="{{{if ./max}}}{./max}{{{else}}}{./maxSize}{{{end}}}">
+							{{{ if (./name == "post") }}}
+							<div class="d-flex justify-content-end align-items-center gap-1">
+								<a href="#" data-bs-toggle="tooltip" data-bs-title="Changing the post cache size requires a restart."><i class="fa-regular fa-circle-question"></i></a>
+								<input id="postCacheSize" style="width:100px;" type="text" class="text-end form-control form-control-sm" value="" data-field="postCacheSize">
+							</div>
+							{{{ else }}}
+							{{{if ./max}}}{./max}{{{else}}}{./maxSize}{{{end}}}
+							{{{ end }}}
+						</td>
+						<td class="text-end" data-sort-value="{./hits}">{./hits}</td>
+						<td class="text-end" data-sort-value="{./misses}">{./misses}</td>
+						<td class="text-end" data-sort-value="{./hitRatio}">{./hitRatio}</td>
+						<td class="text-end" data-sort-value="{./hitsPerSecond}">{./hitsPerSecond}</td>
+						<td class="text-end" data-sort-value="{./ttl}">{./ttl}</td>
+						<td class="">
+							<div class="d-flex justify-content-end gap-1">
+								<a href="{config.relative_path}/api/admin/advanced/cache/dump?name={./name}" class="btn btn-light btn-sm"><i class="fa fa-download"></i></a>
+								<a class="btn btn-sm btn-danger clear" data-name="{./name}"><i class="fa fa-trash"></i></a>
+							</div>
+						</td>
+					</tr>
+					{{{ end }}}
+					</tbody>
+				</table>
+			</div>
+	</div>
+</div>
+

@@ -1,0 +1,18 @@
+{
+	"skins": "Vzhledy",
+	"bootswatch-skins": "Vzhledy pro Bootswatch",
+	"custom-skins": "Vlastní vzhledy",
+	"add-skin": "Add Skin",
+	"save-custom-skins": "Uložit vlastní vzhledy",
+	"save-custom-skins-success": "Vlastní vzhledy byly úspěšně uloženy",
+	"custom-skin-name": "Název vlastního vzhledu",
+	"custom-skin-variables": "Proměnné vlastního vzhledu",
+	"loading": "Načítání motivů…",
+	"homepage": "Domovská stránka",
+	"select-skin": "Vyberte motiv",
+	"revert-skin": "Vrátit vzhled",
+	"current-skin": "Současný motiv",
+	"skin-updated": "Motiv byl aktualizován",
+	"applied-success": "Motiv %1 byl úspěšně použit",
+	"revert-success": "Barvy u motivu navráceny na základní"
+}
