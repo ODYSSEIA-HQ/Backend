@@ -4,5 +4,6 @@
 scripts/
 caddy/
 centrifugo/
-# 上游参考源码（带 .git 的外部仓库副本，按组件归档，不进任何构建上下文）
-**/upstream/
+# nodebb/upstream/NodeBB/ 是 nodebb 镜像的构建源（见 nodebb/Dockerfile），必须放行；
+# bff 的 vendor 参考源码不进根上下文（bff 构建走独立 context ./bff，由 bff/.dockerignore 排除）
+bff/upstream/

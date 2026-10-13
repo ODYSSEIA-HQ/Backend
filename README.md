@@ -43,9 +43,9 @@ odysseia/
 │   └── upstream/caddy/       #   Caddy 源码 vendor（master @ 7328273，缝合件基线）
 ├── centrifugo/config.json    # 四 namespace + subscribe proxy（static_headers 注共享密钥）
 │   └── upstream/centrifugo/  #   Centrifugo 源码 vendor（v6.9.7 @ a2e0896，缝合件基线）
-├── nodebb/Dockerfile         # 官方 NodeBB 4 + 两个自研插件
+├── nodebb/Dockerfile         # NodeBB 4.16.2 源码构建（配方照搬上游）+ 两个自研插件
 ├── nodebb/upstream/NodeBB/   # NodeBB 本体源码（vendor 基线：上游 v4.16.2 @ 18f2a2ee）
-│                             # 独立项目：改核心直接在此改（注意与构建镜像 ghcr.io/nodebb/nodebb:4.x 的差异同步）
+│                             # 独立项目：本目录即构建源，改核心直接在此改，重建镜像即生效
 ├── bff/                     # Rust 版 BFF（axum）：契约与旧 Node 版逐字节对齐
 │   ├── Cargo.toml           # 依赖：axum/tokio/reqwest/jsonwebtoken/hmac+sha2（无 AWS SDK）
 │   ├── src/main.rs          # 五端点：/token、/centrifugo/subscribe、/upload/presign、/chat/:roomId/messages、/vendor/centrifuge.js
@@ -283,7 +283,7 @@ node node_modules/typescript/lib/tsc.js -p ../tsconfig.json
 
 本项目整体以 [GPL-3.0](LICENSE) 发布（NodeBB 插件同进程链接 NodeBB 必须 GPL 兼容；BFF 一并 GPL 保持仓库单一许可证）。
 
-上游组件均为官方镜像原样运行（源码未修改、不入本仓库），仅致谢：
+NodeBB 已源码入库并从源码构建（见 nodebb/Dockerfile），其余上游组件均为官方镜像原样运行，仅致谢：
 
 | 组件 | 用途 | 许可证 |
 |---|---|---|
