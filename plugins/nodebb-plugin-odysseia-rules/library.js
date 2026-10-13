@@ -79,9 +79,10 @@ plugin.onRegisterCheck = async function (payload) {
 	const token = payload && payload.userData && payload.userData.quizToken;
 	if (await quiz.consumeToken(token)) return payload;
 
-	payload.errors = payload.errors || [];
-	payload.errors.push('[[error:odysseia-quiz-not-passed]] 请先完成准入答题');
-	return payload;
+	// vendor authentication.js 的 filter:register.check 钩子不消费返回值，
+	// push 进 payload.errors 后照常 return 拦不住注册——只有 throw 才会被
+	// 上游 catch 转成 400 中止
+	throw new Error('[[error:odysseia-quiz-not-passed]] 请先完成准入答题');
 };
 
 // ---------- 新人自动入组（缓冲区权益由新人组承载：限速 / 禁发 R18 等） ----------

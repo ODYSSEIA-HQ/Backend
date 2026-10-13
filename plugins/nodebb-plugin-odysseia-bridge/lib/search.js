@@ -20,7 +20,8 @@ async function ensureIndex() {
 	await client.waitForTask(task.taskUid);
 	await client.index(INDEX_UID).updateSettings({
 		searchableAttributes: ['content'],
-		filterableAttributes: ['tid', 'uid', 'timestamp'],
+		// cid 可过滤：搜索侧按阅读权限排除受限板块（R18/R18G）
+		filterableAttributes: ['tid', 'uid', 'timestamp', 'cid'],
 		sortableAttributes: ['timestamp'],
 	});
 	indexReady = true;
@@ -32,6 +33,7 @@ function toDoc(post) {
 		id: String(post.pid),
 		pid: post.pid,
 		tid: post.tid,
+		cid: Number(post.cid) || 0, // 所属板块，权限过滤依据；无 cid 的旧文档为 0
 		uid: post.uid,
 		content: String(post.content || '').replace(/<[^>]*>/g, ' '), // 去标签，索引纯文本
 		timestamp: post.timestamp || Date.now(),

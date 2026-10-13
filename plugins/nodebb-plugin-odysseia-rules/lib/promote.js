@@ -62,7 +62,8 @@ async function runOnce(getSettings) {
 				);
 				if (!uids || !uids.length) break;
 
-				const members = await Groups.isMember(uids, String(group));
+				// 注意复数 API：isMembers(uids, group) -> boolean[]（单数 isMember 只接受单个 uid）
+			const members = await Groups.isMembers(uids, String(group));
 			let toJoin = uids.filter((uid, i) => !members[i] && Number(uid) > 0);
 
 			// 双条件：postCount 达标之外，还须过 120h 新人缓冲区（joindate + buffer <= now），

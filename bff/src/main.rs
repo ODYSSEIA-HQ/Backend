@@ -156,6 +156,14 @@ fn err_json(status: StatusCode, body: serde_json::Value) -> Response {
 	resp
 }
 
+/// JSON 值 → u64：Centrifugo proxy 协议里数字常以字符串到达（如 user: "123"），
+/// 先按字符串解析再回退数值，两者都不成则 None
+fn json_u64(v: &serde_json::Value) -> Option<u64> {
+	v.as_str()
+		.and_then(|s| s.parse::<u64>().ok())
+		.or_else(|| v.as_u64())
+}
+
 // ==================================================================
 // 应用状态
 // ==================================================================
@@ -191,8 +199,8 @@ async fn resolve_uid(state: &AppState, cookie: Option<&HeaderValue>) -> u64 {
 		return 0;
 	};
 	data.get("uid")
-		.and_then(|v| v.as_u64())
-		.or_else(|| data.get("_uid").and_then(|v| v.as_u64()))
+		.and_then(json_u64)
+		.or_else(|| data.get("_uid").and_then(json_u64))
 		.unwrap_or(0)
 }
 
@@ -320,7 +328,7 @@ async fn post_subscribe(
 
 	// 连接用户身份：仅取代理请求体 user 字段（Centrifugo 从连接 token 的 sub 服务端注入，可信）；
 	// 不回退 x-centrifugo-user 头——该头可被直连方伪造
-	let uid = body.user.as_u64().unwrap_or(0);
+	let uid = json_u64(&body.user).unwrap_or(0);
 	if uid == 0 {
 		return proxy_deny();
 	}
@@ -413,7 +421,7 @@ async fn post_presign(
 	let bucket = match body.kind.as_deref() {
 		Some("r18") => {
 			// R18 桶：必须挂在具体帖子下，且用户对该帖有读权限（无权者 403，不暴露桶存在）
-			let tid = body.tid.as_ref().and_then(|v| v.as_u64()).unwrap_or(0);
+			let tid = body.tid.as_ref().and_then(json_u64).unwrap_or(0);
 			if tid == 0 {
 				return err_json(StatusCode::BAD_REQUEST, serde_json::json!({ "error": "tid required" }));
 			}
@@ -712,8 +720,9 @@ async fn get_chat_messages(
 		}
 	}
 	if start < 0 {
-		// 目标太靠新（前页不足 limit）：clamp 到 0，stop 平移保窗口宽
-		stop += start;
+		// 目标太靠新（前页不足 limit）：clamp 到 0，stop 平移保窗口宽。
+		// start 为负，减去它等于加其绝对值 → stop 右移同量
+		stop -= start;
 		start = 0;
 	}
 	if stop < start {

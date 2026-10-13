@@ -90,8 +90,10 @@ async function consumeToken(token) {
 // 顺手清理过期 token（在每次签发时执行，无需独立 cron）
 async function sweepExpiredTokens() {
 	try {
-		if (db && typeof db.sortedSetRemoveRangeByScore === 'function') {
-			await db.sortedSetRemoveRangeByScore(TOKENS_KEY, '-inf', Date.now());
+		// db 只有复数签名 sortedSetsRemoveRangeByScore(keys, min, max)，无单数版本；
+		// mongo/redis 后端 max 会 parseFloat，传字符串数字保证兼容
+		if (db && typeof db.sortedSetsRemoveRangeByScore === 'function') {
+			await db.sortedSetsRemoveRangeByScore([TOKENS_KEY], '-inf', String(Date.now()));
 		}
 	} catch (e) {
 		/* 清理失败不影响主流程 */

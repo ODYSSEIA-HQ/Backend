@@ -278,7 +278,10 @@ plugin.onChatNotify = async function (data) {
 	const roomId = data && data.roomId;
 	const msg = (data && data.message) || {};
 	if (roomId) {
-		await publish(`chat:${roomId}`, {
+		// fire-and-forget：publish 内部全 catch 绝不 reject。
+		// 这里是 vendor await 串行的 filter 链，若 await，Centrifugo 宕机时
+		// 每次 OCC 超时都会把整条通知流拖满超时
+		publish(`chat:${roomId}`, {
 			type: 'chat.new',
 			message: {
 				pid: msg.messageId || msg.mid,
@@ -291,7 +294,7 @@ plugin.onChatNotify = async function (data) {
 		// 发送者多端同步（user 频道）；接收方通知由前端订阅自己的 chat 频道实现
 		const fromUid = msg.fromuid || msg.fromUid || (data && data.fromUid);
 		if (fromUid) {
-			await publish(`user:${fromUid}`, {
+			publish(`user:${fromUid}`, {
 				type: 'chat.sent',
 				roomId,
 				messageId: msg.messageId || msg.mid,

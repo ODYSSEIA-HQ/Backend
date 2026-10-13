@@ -137,18 +137,6 @@ async function clearReactions(pid) {
 	return { ok: true };
 }
 
-/**
- * 获取某消息的反应总数
- */
-async function getReactionCount(pid) {
-	if (!db || !pid) return 0;
-	try {
-		return await db.sortedSetCard(`${COLLECTION}:pid:${pid}`);
-	} catch (e) {
-		return 0;
-	}
-}
-
 // ---------- 读路径 ----------
 
 /**
