@@ -70,16 +70,27 @@
 			.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 	}
 
-	/** 动态加载 centrifuge SDK（BFF 静态托管，无 CDN 依赖） */
-	function loadSDK(cb) {
+	/** 动态加载 centrifuge SDK（BFF 静态托管，无 CDN 依赖）；errCb 必须调，否则 connecting 永真卡死 */
+	function loadSDK(cb, errCb) {
 		if (window.Centrifuge) return cb();
 		var s = document.createElement('script');
 		s.src = SDK_URL;
 		s.onload = function () { cb(); };
 		s.onerror = function () {
 			log('SDK 加载失败（BFF 不可达？），实时层降级为 NodeBB 原生通道');
+			if (errCb) errCb();
 		};
 		document.head.appendChild(s);
+	}
+
+	/** 取连接 token：SDK 首连与 token 临期时自动回调（BFF /token 按会话签发，2h TTL 自动续期） */
+	function fetchToken() {
+		return fetch(TOKEN_URL, { credentials: 'include' }).then(function (res) {
+			if (!res.ok) throw new Error('token ' + res.status);
+			return res.json();
+		}).then(function (data) {
+			return data.token;
+		});
 	}
 
 	/** 游客不连 WS：未登录浏览走 NodeBB SSR/REST（架构 D8） */
@@ -89,33 +100,40 @@
 
 	// ---------- 连接生命周期 ----------
 
+	// 连接进行期间到达的回调排队（防并发丢订阅），连接完成/失败后统一冲刷；
+	// 回调内均有 state.centrifuge 判空，失败冲刷安全
+	var pendingCbs = [];
+
 	function ensureConnection(cb) {
 		if (state.centrifuge) return cb();
-		if (state.connecting) return;
+		if (state.connecting) {
+			pendingCbs.push(cb);
+			return;
+		}
 		state.connecting = true;
 
-		fetch(TOKEN_URL, { credentials: 'include' }).then(function (res) {
-			if (!res.ok) throw new Error('token ' + res.status);
-			return res.json();
-		}).then(function (data) {
-			loadSDK(function () {
-				if (!window.Centrifuge) {
-					state.connecting = false;
-					return;
-				}
-				var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-				var endpoint = proto + '//' + location.host + '/connection/websocket';
-				state.centrifuge = new window.Centrifuge(endpoint, { token: data.token });
-				state.centrifuge.on('connected', function () { log('WS 已连接'); });
-				state.centrifuge.on('error', function (ctx) { log('WS 错误', ctx && ctx.message); });
-				state.centrifuge.connect();
-				state.connecting = false;
-				cb();
-			});
-		}).catch(function (err) {
+		function done() {
 			state.connecting = false;
-			log('连接 token 获取失败，实时层未启用：', err && err.message);
-		});
+			var queue = pendingCbs;
+			pendingCbs = [];
+			for (var i = 0; i < queue.length; i++) queue[i]();
+		}
+
+		loadSDK(function () {
+			if (!window.Centrifuge) {
+				done();
+				return;
+			}
+			var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+			var endpoint = proto + '//' + location.host + '/connection/websocket';
+			// getToken 而非静态 token：过期前 SDK 自动回调续期，2h TTL 不会把长会话踢下线
+			state.centrifuge = new window.Centrifuge(endpoint, { getToken: fetchToken });
+			state.centrifuge.on('connected', function () { log('WS 已连接'); });
+			state.centrifuge.on('error', function (ctx) { log('WS 错误', ctx && ctx.message); });
+			state.centrifuge.connect();
+			cb();
+			done();
+		}, done); // SDK 加载失败：复位 connecting 并冲刷队列
 	}
 
 	function enterTopic(tid, data) {

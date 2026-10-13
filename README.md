@@ -5,6 +5,7 @@
 ```
 odysseia/
 ├── docker-compose.yml        # 七服务编排（caddy/nodebb/centrifugo/meili/mongo/redis/bff）
+├── docker-compose.dev.yml    # 本地演示叠加层（弱口令/免TLS，须手动 -f 加载，生产不自动叠加）
 ├── .env.example              # 密钥清单模板
 ├── caddy/Caddyfile           # 反向代理路由表（WS 升级 / 管理界面 / BFF / NodeBB）
 ├── centrifugo/config.json    # 四 namespace：topic / chat / typing / user
@@ -53,6 +54,12 @@ openssl rand -base64 24 # MONGO / REDIS / MEILI / CENTRIFUGO_ADMIN_PASSWORD 密�
 
 ```bash
 docker compose up -d --build
+```
+
+本地演示（弱口令、免 TLS、缩量）需显式叠加 dev 层：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 ```
 
 浏览器访问 `https://<域名>` 完成 NodeBB 首次安装（管理员账号、数据库配置已在容器注入，按向导走即可）。

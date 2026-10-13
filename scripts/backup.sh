@@ -27,7 +27,7 @@ trap 'rm -rf "$TMP"' EXIT
 NETWORK="odysseia_default"   # compose 项目名 odysseia 的默认网络
 TOOLS_IMAGE="mongodb/mongodb-database-tools:100.10.0"
 
-echo "==> 1/4 mongodump（数据库：${MONGO_INITDB_DATABASE}）"
+echo "==> 1/5 mongodump（数据库：${MONGO_INITDB_DATABASE}）"
 docker run --rm --network "$NETWORK" -v "${TMP}:/backup" "$TOOLS_IMAGE" \
   mongodump \
   --host mongo \
@@ -36,15 +36,19 @@ docker run --rm --network "$NETWORK" -v "${TMP}:/backup" "$TOOLS_IMAGE" \
   --db "$MONGO_INITDB_DATABASE" \
   --archive=/backup/dump.gz --gzip
 
-echo "==> 2/4 打包 uploads 卷"
+echo "==> 2/5 打包 uploads 卷"
 docker run --rm -v odysseia_nodebb_uploads:/data:ro -v "${TMP}:/backup" alpine \
   tar czf /backup/uploads.tar.gz -C /data .
 
-echo "==> 3/4 age 加密（公钥加密，私钥离线）"
-tar cf "${TMP}/bundle.tar" -C "${TMP}" dump.gz uploads.tar.gz
+echo "==> 3/5 打包 nodebb_config 卷（config.json 含 secret / 数据库凭据，丢它等于丢全站配置）"
+docker run --rm -v odysseia_nodebb_config:/data:ro -v "${TMP}:/backup" alpine \
+  tar czf /backup/config.tar.gz -C /data .
+
+echo "==> 4/5 age 加密（公钥加密，私钥离线）"
+tar cf "${TMP}/bundle.tar" -C "${TMP}" dump.gz uploads.tar.gz config.tar.gz
 age -r "$BACKUP_AGE_PUBLIC_KEY" -o "${TMP}/odysseia-${STAMP}.tar.age" "${TMP}/bundle.tar"
 
-echo "==> 4/4 上传 R2 备份桶"
+echo "==> 5/5 上传 R2 备份桶"
 RCLONE_CONFIG_R2_TYPE=s3 \
 RCLONE_CONFIG_R2_PROVIDER=Cloudflare \
 RCLONE_CONFIG_R2_ENDPOINT="$R2_ENDPOINT" \
@@ -53,7 +57,13 @@ RCLONE_CONFIG_R2_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
 rclone copy "${TMP}/odysseia-${STAMP}.tar.age" "r2:${R2_BUCKET_BACKUP}/" \
   --s3-no-check-bucket
 
-# 附：保留策略（可选，去掉注释启用）
-# RCLONE_CONFIG_R2_TYPE=s3 ... rclone delete "r2:${R2_BUCKET_BACKUP}" --min-age 30d
+# 保留策略：清理 30 天前的旧备份（不启用则备份桶无限膨胀，成本持续放大）
+echo "==> 保留策略：清理 30 天前的旧备份"
+RCLONE_CONFIG_R2_TYPE=s3 \
+RCLONE_CONFIG_R2_PROVIDER=Cloudflare \
+RCLONE_CONFIG_R2_ENDPOINT="$R2_ENDPOINT" \
+RCLONE_CONFIG_R2_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" \
+RCLONE_CONFIG_R2_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
+rclone delete "r2:${R2_BUCKET_BACKUP}" --min-age 30d --s3-no-check-bucket
 
 echo "✔ 备份完成：odysseia-${STAMP}.tar.age → ${R2_BUCKET_BACKUP}"

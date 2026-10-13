@@ -15,6 +15,8 @@ async function publish(channel, data) {
 				'Content-Type': 'application/json',
 			},
 			body: JSON.stringify({ method: 'publish', params: { channel, data } }),
+			// fire-and-forget 也要兜底超时：Centrifugo 挂起时无超时 fetch 会堆积并发句柄拖垮 NodeBB 事件循环
+			signal: AbortSignal.timeout(3000),
 		});
 		if (!res.ok) {
 			console.error(`[odysseia-bridge] centrifugo publish ${channel} 失败: HTTP ${res.status}`);

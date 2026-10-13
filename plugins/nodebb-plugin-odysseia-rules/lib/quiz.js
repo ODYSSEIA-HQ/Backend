@@ -35,6 +35,9 @@ const TOKENS_KEY = 'odysseia:quiz:tokens';
 const TOKEN_TTL_MS = 24 * 3600 * 1000;
 
 const INTERNAL_TOKEN = process.env.ODYSSEIA_INTERNAL_TOKEN || '';
+if (!INTERNAL_TOKEN) {
+	console.warn('[odysseia-rules] ODYSSEIA_INTERNAL_TOKEN 未配置，内部 API 将全部拒绝（fail-closed）');
+}
 
 // ---------- 题库读写 ----------
 
@@ -64,6 +67,19 @@ async function issueToken() {
 
 async function consumeToken(token) {
 	if (!token || !db) return false;
+	// 原子消费：NodeBB v4.16.2 mongo 驱动的 db.sortedSetRemove 内部 deleteMany 无返回值
+	// （上游 src/database/mongo/sorted/remove.js 实证），先读分后删除存在 TOCTOU——
+	// 并发注册可复用同一 token 绕过"一次性"。改用 db.client 条件删除：
+	// 单操作完成"存在且未过期→删除"，deletedCount 即消费权裁决。
+	if (db.client && typeof db.client.collection === 'function') {
+		const r = await db.client.collection('objects').deleteOne({
+			_key: TOKENS_KEY,
+			value: String(token),
+			score: { $gt: Date.now() },
+		});
+		return r.deletedCount === 1;
+	}
+	// 非 mongo 后端（如 redis）回退读分+删除；竞态窗口由注册流天然低并发兜底
 	const expiresAt = await db.getSortedSetScore(TOKENS_KEY, token);
 	if (!expiresAt || Number(expiresAt) < Date.now()) return false;
 	// 消费即焚：从 set 中移除，同一 token 无法重复注册
@@ -83,6 +99,25 @@ async function sweepExpiredTokens() {
 }
 
 // ---------- 公开路由（注册页答题，未登录可访问） ----------
+
+// verify 限频：按 IP 内存滑动窗口（10 次/10 分钟）。
+// 不限频则 verify 是在线爆破答案的免费 oracle（每题仅 ~4 选项，全对即发票）
+const VERIFY_WINDOW_MS = 10 * 60 * 1000;
+const VERIFY_MAX = 10;
+const verifyHits = new Map(); // ip -> number[]（窗口内时间戳）
+
+function verifyAllowed(ip) {
+	const now = Date.now();
+	const hits = (verifyHits.get(ip) || []).filter(t => now - t < VERIFY_WINDOW_MS);
+	if (hits.length >= VERIFY_MAX) {
+		verifyHits.set(ip, hits);
+		return false;
+	}
+	hits.push(now);
+	verifyHits.set(ip, hits);
+	if (verifyHits.size > 10000) verifyHits.clear(); // 防内存膨胀，限频精度可牺牲
+	return true;
+}
 
 function mountPublic(router) {
 	// 拉取题库（无答案）：[{id, question, options: ['..', ...]}]
@@ -106,6 +141,10 @@ function mountPublic(router) {
 	// 提交答卷：answers = { [题id]: '选项文本' }，全对发一次性 token
 	router.post('/api/v3/plugins/odysseia/quiz/verify', async (req, res) => {
 		try {
+			if (!verifyAllowed(req.ip || 'unknown')) {
+				return res.status(429).json({ passed: false, error: 'too many requests' });
+			}
+
 			const bank = await getBank();
 			const answers = (req.body && req.body.answers) || {};
 
@@ -128,7 +167,10 @@ function mountPublic(router) {
 // ---------- 内部路由（题库管理，X-Internal-Token） ----------
 
 function requireInternalToken(req, res, next) {
-	if (!INTERNAL_TOKEN || req.headers['x-internal-token'] !== INTERNAL_TOKEN) {
+	// 等长比较防时序侧信道；token 未配置时 fail-closed（启动期已告警）
+	const given = Buffer.from(String(req.headers['x-internal-token'] || ''));
+	const expect = Buffer.from(INTERNAL_TOKEN);
+	if (!expect.length || given.length !== expect.length || !crypto.timingSafeEqual(given, expect)) {
 		return res.status(403).json({ error: 'forbidden' });
 	}
 	next();

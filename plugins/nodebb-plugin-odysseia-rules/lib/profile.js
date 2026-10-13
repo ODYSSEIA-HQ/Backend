@@ -11,6 +11,8 @@
  * 全部路由要求 header: X-Internal-Token
  */
 
+const crypto = require('crypto');
+
 function loadModule(...paths) {
 	for (const p of paths) {
 		try {
@@ -28,7 +30,10 @@ const Groups = loadModule('./src/groups');
 const INTERNAL_TOKEN = process.env.ODYSSEIA_INTERNAL_TOKEN || '';
 
 function requireInternalToken(req, res, next) {
-	if (!INTERNAL_TOKEN || req.headers['x-internal-token'] !== INTERNAL_TOKEN) {
+	// 等长比较防时序侧信道；token 未配置时 fail-closed
+	const given = Buffer.from(String(req.headers['x-internal-token'] || ''));
+	const expect = Buffer.from(INTERNAL_TOKEN);
+	if (!expect.length || given.length !== expect.length || !crypto.timingSafeEqual(given, expect)) {
 		return res.status(403).json({ error: 'forbidden' });
 	}
 	next();

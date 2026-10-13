@@ -1,11 +1,12 @@
 # ============================================================
-# 本地演示叠加层（docker compose 自动加载）
+# 本地演示叠加层（手动 -f 加载，生产 docker compose 不会自动叠加）
+# 启动：docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 # 效果：http://localhost:8080 直接访问
 #   - 纯 HTTP（免 TLS 信任配置）
 #   - Mongo / Redis 免认证（容器内网）
 #   - 内存缩量（适配开发机）
 #   - NodeBB 首装向导全自动（admin / odysseia-demo）
-# 生产部署：删除本文件即可回到生产编排
+# 生产部署：无需删除本文件——不显式 -f 引用即不生效（原名 override.yml 会被自动加载，已改名隔离）
 # ============================================================
 
 services:
