@@ -26,9 +26,13 @@ services:
 
   nodebb:
     environment: !override
-      # 官方 install.js envConfMap 只认 NODEBB_URL/PORT/ADMIN_*/DB_* 系列变量名
-      # config.json 缺失时 entrypoint 自动跑 nodebb install，
-      # checkSetupFlagEnv 检测到上述 env 即全自动完成安装（无需 SETUP 开关，无死循环）
+      # !override 整体替换主层 environment 块——主层的 SETUP 也会被丢弃，
+      # 必须在此显式重申，否则 entrypoint 落回 install 分支 = web installer 死路
+      SETUP: "1"
+      # 官方 install.js envConfMap 只认 NODEBB_URL/PORT/ADMIN_*/DB_* 系列变量名。
+      # 程序化首装由 SETUP=1 触发（nodebb setup → checkSetupFlagEnv）：
+      # 「nodebb install 也会全自动」是错的——cli/index.js:119 对任何
+      # 非 setup verb 无条件落 web installer 等人工输入，install 是死路。
       NODEBB_URL: http://localhost:8080
       NODEBB_PORT: "4567"
       NODEBB_ADMIN_USERNAME: admin

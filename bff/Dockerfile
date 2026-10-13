@@ -1,5 +1,6 @@
-# syntax=docker/dockerfile:1
 # ΟΔΥΣΣΕΙΑ BFF（Rust 版）——multi-stage 构建
+# 不用 # syntax=docker/dockerfile:1 指令：会强制从 docker.io 拉 frontend 镜像，
+# 无法直连 docker.io 的构建机直接失败；本文件只用 BuildKit 内置基础语法，无此需要
 # 产物：~10MB 镜像（对比 Node 版 ~200MB node_modules 镜像）
 
 # ---------- stage 1：编译 ----------

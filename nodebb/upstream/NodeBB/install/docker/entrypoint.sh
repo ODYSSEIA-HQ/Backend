@@ -224,7 +224,12 @@ main() {
   debug_log "START_BUILD: $START_BUILD"
   debug_log "NODEBB_ADDITIONAL_PLUGINS: ${NODEBB_ADDITIONAL_PLUGINS}"
 
-  if [ -n "$SETUP" ]; then
+  # [odysseia 本地修改] upstream 原文为 `if [ -n "$SETUP" ]`——SETUP 非空即无条件重跑
+  # nodebb setup，配合 compose 静态 env + restart: unless-stopped 会每次重启都把
+  # 论坛设置打回默认（setupDefaultConfigs 覆盖写库）。加 config 缺失守卫后语义幂等：
+  # 首次无 config → setup（env 全自动）→ 完成后 exit → 自动重启 → config 已在卷里
+  # → 跳过 setup 直起论坛。需要重装时删掉 nodebb_config 卷即可。
+  if [ -n "$SETUP" ] && [ ! -f "$CONFIG" ]; then
     start_setup_session "$CONFIG"
   fi
 

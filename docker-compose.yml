@@ -47,11 +47,16 @@ services:
       dockerfile: nodebb/Dockerfile
     restart: unless-stopped
     environment:
-      # ---- 无头首装（实证：nodebb/upstream/NodeBB/src/install.js envConfMap）----
-      # 仅当 SETUP 非空时，entrypoint 执行 nodebb setup（强制重新安装场景）；
-      # 日常启动 SETUP 留空，config.json 缺失时 entrypoint 也会自动跑 nodebb install，
-      # 由下方 NODEBB_* 环境变量（install.js envConfMap）完成全自动首装
-      SETUP: ${NODEBB_SETUP:-}
+      # ---- 无头首装（实证：nodebb/upstream/NodeBB/src/cli/index.js:119）----
+      # config.json 缺失时 CLI 对任何非 setup verb（含 install）无条件落 web installer
+      # 等人工输入——entrypoint 默认的 NODEBB_INIT_VERB=install 是死路。程序化安装
+      # 唯一入口是 `nodebb setup`，由 SETUP env 触发；env 四件套（ADMIN_USERNAME/
+      # PASSWORD/EMAIL，confirm 自动复制）齐备即 checkSetupFlagEnv 全自动。
+      # entrypoint 已加 config 缺失守卫（见 install/docker/entrypoint.sh 本地修改）：
+      # 装完 exit → unless-stopped 自动重启 → config 在卷里 → 跳过 setup 直起论坛。
+      # 首次起栈时序：nodebb 首装期间 healthcheck 必失败，caddy/bff 的 healthy 门禁
+      # 不会通过——首装完成后再跑一次 `up -d` 补齐即可（幂等）。
+      SETUP: ${NODEBB_SETUP:-1}
       NODEBB_URL: https://${ODYSSEIA_DOMAIN}
       NODEBB_ADMIN_USERNAME: ${NODEBB_ADMIN_USERNAME:-admin}
       NODEBB_ADMIN_PASSWORD: ${NODEBB_ADMIN_PASSWORD:?请在 .env 设置 NODEBB_ADMIN_PASSWORD}
@@ -81,7 +86,9 @@ services:
     mem_limit: 8g
     healthcheck:
       # HTTP 起不来即 unhealthy（覆盖 NodeBB 内部崩坏；mongo/redis 故障由 depends_on 前置挡）
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4567/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      # 端点用 /sping（NodeBB 4.x 唯一内置健康路由，webserver.js:188，返回 200）——
+      # 曾误写 /health，运行时实证 404 → 永远 unhealthy
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4567/sping').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 3

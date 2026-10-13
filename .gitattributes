@@ -1,0 +1,7 @@
+# 行尾纪律：凡进 Linux 容器的可执行脚本必须 LF。
+# CRLF 的 shebang（#!/bin/bash\r）在容器内直接 "No such file or directory"——
+# upstream NodeBB 自带的 .gitattributes 只 normalize .js/.json/.tpl 等、不含 *.sh，
+# Windows autocrlf 检出时 entrypoint.sh 全部 CRLF 化，镜像构建成功但容器起不来。
+*.sh                         text eol=lf
+# NodeBB CLI 入口（无扩展名，entrypoint.sh 会执行它）
+nodebb/upstream/NodeBB/nodebb text eol=lf
