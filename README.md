@@ -65,7 +65,8 @@ odysseia/
 │       └── lib/              #   quiz（题库+一次性token）/ promote（cron晋升）/ profile（缓冲区API）
 └── scripts/
     ├── bootstrap.sh          # 首装后激活插件 + build + 重启，打印 ACP 手动步骤
-    └── backup.sh             # mongodump + uploads + nodebb_config → age 加密 → R2（含 30d 保留策略）
+    ├── backup.sh             # mongodump + uploads + nodebb_config → age 加密 → R2（含 30d 保留策略）
+    └── contract-diff.js     # BFF 契约对拍（新旧并排跑，diff 三套契约：429/JWT/错误）
 ```
 
 ## 核心契约

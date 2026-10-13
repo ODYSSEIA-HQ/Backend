@@ -143,6 +143,7 @@ services:
     volumes:
       - mongo_data:/data/db
       - ./scripts:/scripts:ro # 备份脚本用
+    mem_limit: 16g # 12G wiredTiger cache + 连接/聚合开销余量，防止慢查询吃光 64G
 
   redis:
     image: redis:7-alpine
@@ -150,6 +151,7 @@ services:
     # noeviction：NodeBB 的 Redis 键多为无 TTL 业务数据（会话/通知/计数），
     # LRU 驱逐会造成静默数据丢失（帖子数丢失、通知丢失类诡异 bug），宁可写满时报错
     command: ["redis-server", "--maxmemory", "2gb", "--maxmemory-policy", "noeviction", "--requirepass", "${REDIS_PASSWORD}"]
+    mem_limit: 3g # maxmemory 2gb + fork 持久化时 COW 开销余量
     volumes:
       - redis_data:/data
 
