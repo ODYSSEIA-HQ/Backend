@@ -1,0 +1,111 @@
+import { Writer, Reader } from 'protobufjs/minimal'
+import { centrifugal } from './client_proto';
+import { applyDelta } from './fossil';
+
+const Command = centrifugal.centrifuge.protocol.Command;
+const Reply = centrifugal.centrifuge.protocol.Reply;
+const EmulationRequest = centrifugal.centrifuge.protocol.EmulationRequest;
+
+// A reply length beyond this means the data isn't a stream of replies.
+const maxReplyLength = 64 * 1024 * 1024;
+
+/** @internal */
+export class ProtobufCodec {
+  name(): string {
+    return 'protobuf';
+  }
+
+  encodeEmulationRequest(req: centrifugal.centrifuge.protocol.IEmulationRequest): Uint8Array {
+    const writer = Writer.create();
+    EmulationRequest.encode(req, writer);
+    return writer.finish();
+  }
+
+  encodeCommands(commands: centrifugal.centrifuge.protocol.ICommand[]): Uint8Array {
+    const writer = Writer.create();
+    for (const command of commands) {
+      writer.fork();
+      Command.encodeDelimited(command, writer);
+    }
+    return writer.finish();
+  }
+
+  encodeReplies(replies: centrifugal.centrifuge.protocol.IReply[]): Uint8Array {
+    const writer = Writer.create();
+    for (const reply of replies) {
+      writer.fork();
+      Reply.encodeDelimited(reply, writer);
+    }
+    return writer.finish();
+  }
+
+  decodeReplies(data: ArrayBuffer | Uint8Array): centrifugal.centrifuge.protocol.Reply[] {
+    const replies: centrifugal.centrifuge.protocol.Reply[] = [];
+    const reader = Reader.create(new Uint8Array(data));
+    while (reader.pos < reader.len) {
+      const reply = Reply.decodeDelimited(reader);
+      replies.push(reply);
+    }
+    return replies;
+  }
+
+  decodeCommands(data: ArrayBuffer | Uint8Array): centrifugal.centrifuge.protocol.Command[] {
+    const commands: centrifugal.centrifuge.protocol.Command[] = [];
+    const reader = Reader.create(new Uint8Array(data));
+    while (reader.pos < reader.len) {
+      const reply = Command.decodeDelimited(reader);
+      commands.push(reply);
+    }
+    return commands;
+  }
+
+  decodeReply(data: ArrayBuffer | Uint8Array): { ok: true; pos: number } | { ok: false } {
+    // Without a copy: a stream buffer passes a view of the data it holds.
+    const reader = Reader.create(data instanceof Uint8Array ? data : new Uint8Array(data));
+    if (reader.pos >= reader.len) {
+      return { ok: false };
+    }
+    // A stream read may end in the middle of a reply, even inside its length
+    // prefix: more data is needed then, it is not a decoding error.
+    let length: number;
+    try {
+      length = reader.uint32();
+    } catch (e) {
+      if (e instanceof RangeError) {
+        return { ok: false };
+      }
+      throw e;
+    }
+    if (length > maxReplyLength) {
+      // E.g. an HTML page from a captive portal: fail instead of waiting for that
+      // much data, so the transport is closed.
+      throw new Error(`reply length ${length} exceeds ${maxReplyLength}`);
+    }
+    if (reader.pos + length > reader.len) {
+      return { ok: false };
+    }
+    Reply.decode(reader, length);
+    return {
+      ok: true,
+      pos: reader.pos
+    };
+  }
+
+  applyDeltaIfNeeded(pub: centrifugal.centrifuge.protocol.IPublication, prevValue: Uint8Array): { newData: Uint8Array; newPrevValue: Uint8Array; isDelta: boolean; wireBytes: number; fullBytes: number } {
+    let newData: Uint8Array, newPrevValue: Uint8Array;
+    let isDelta: boolean;
+    if (pub.delta) {
+      isDelta = true;
+      // binary delta.
+      const valueArray = applyDelta(prevValue, pub.data!);
+      newData = new Uint8Array(valueArray)
+      newPrevValue = valueArray;
+    } else {
+      isDelta = false;
+      // full binary data.
+      newData = pub.data!;
+      newPrevValue = pub.data!;
+    }
+    return { newData, newPrevValue, isDelta, wireBytes: pub.data!.length, fullBytes: newPrevValue.length }
+  }
+}

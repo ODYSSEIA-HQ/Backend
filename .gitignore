@@ -3,10 +3,7 @@ node_modules/
 *.log
 # NodeBB 本体源码：vendor 基线入库（上游 v4.16.2 @ 18f2a2ee，独立项目可直接改核心）
 # 嵌套 .git 已移出仓库；node_modules 由上方全局规则、构建产物由上游自带 .gitignore 处理
-# 第三方研究参考副本（SDK/基础设施源码，本地归档不入库；只有 NodeBB 本体作为应用核心入库）
-bff/upstream/
-caddy/upstream/
-centrifugo/upstream/
+# 缝合件源码基线同样入库：centrifuge-js e69b1d8 / meilisearch-js v0.44.0 / caddy 7328273 / centrifugo v6.9.7
 # Rust 编译产物
 bff/target/
 # JSDoc 类型检查的本地工具链（typescript + @types/node，不入库）

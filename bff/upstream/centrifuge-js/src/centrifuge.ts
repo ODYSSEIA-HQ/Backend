@@ -1,0 +1,2757 @@
+import {
+  Subscription,
+  BaseSubscription as _BaseSubscription,
+  MapSubscription as _MapSubscription,
+  SharedPollSubscription as _SharedPollSubscription
+} from './subscription';
+import {
+  errorCodes, disconnectedCodes, unsubscribedCodes,
+  connectingCodes, subscribingCodes
+} from './codes';
+
+import { SockjsTransport } from './transport_sockjs';
+import { WebsocketTransport } from './transport_websocket';
+import { HttpStreamTransport } from './transport_http_stream';
+import { SseTransport } from './transport_sse';
+import { WebtransportTransport } from './transport_webtransport';
+
+import { JsonCodec } from './json';
+
+import {
+  isFunction, log, startsWith, errorExists,
+  backoff, ttlMilliseconds, localStorageItem,
+  hasOffset, toOffset,
+} from './utils';
+
+import {
+  State, Options, SubscriptionState, ClientEvents,
+  TypedEventEmitter, RpcResult, SubscriptionOptions,
+  MapSubscriptionOptions, MapSubscriptionEvents, BaseSubscriptionEvents,
+  SharedPollSubscriptionOptions, SharedPollSubscriptionEvents, SharedPollTrackItem,
+  HistoryOptions, HistoryResult, PublishResult,
+  PresenceResult, PresenceStatsResult, SubscribedContext,
+  TransportEndpoint,
+} from './types';
+
+import EventEmitter from 'events';
+
+/** Common methods shared by all subscription types. */
+type CommonSurface = Pick<_BaseSubscription,
+  'channel' | 'state' | 'type' |
+  'subscribe' | 'unsubscribe' | 'ready' |
+  'presence' | 'presenceStats' |
+  'setData' | 'deltaStats'
+>;
+
+/** Common subscription surface — use for mixed-type registries. */
+export type BaseSubscription = CommonSurface & TypedEventEmitter<BaseSubscriptionEvents>;
+
+/** Map subscription: publish/remove + narrowed map events. */
+export type MapSubscription = CommonSurface
+  & Pick<_BaseSubscription, 'setTagsFilter'>
+  & { publish(key: string, data: any): Promise<PublishResult>; remove(key: string): Promise<PublishResult>; }
+  & TypedEventEmitter<MapSubscriptionEvents>;
+
+/** Shared poll subscription: track/untrack + narrowed shared poll events. */
+export type SharedPollSubscription = CommonSurface
+  & {
+    track(keysOrItems: string[] | SharedPollTrackItem[], signature?: string): void;
+    untrack(keys: string[]): void;
+    trackedKeys(): Set<string>;
+  }
+  & TypedEventEmitter<SharedPollSubscriptionEvents>;
+
+const defaults: Options = {
+  headers: {},
+  token: '',
+  getToken: null,
+  data: null,
+  getData: null,
+  debug: false,
+  name: 'js',
+  version: '',
+  fetch: null,
+  readableStream: null,
+  websocket: null,
+  eventsource: null,
+  sockjs: null,
+  sockjsOptions: {},
+  emulationEndpoint: '/emulation',
+  minReconnectDelay: 500,
+  maxReconnectDelay: 20000,
+  timeout: 5000,
+  maxServerPingDelay: 10000,
+  networkEventTarget: null,
+}
+
+const websocketNotFound = 'WebSocket constructor not found, make sure it is available globally or passed as a dependency in Centrifuge options';
+
+// A call or no-ping timer running at least this late means the event loop didn't
+// run meanwhile: the process was suspended or blocked (see _registerCall).
+const lateCallTimer = 1000;
+// How long such a call still waits for its reply, or the connection for a ping,
+// before failing.
+const lateCallGrace = 1000;
+
+interface serverSubscription {
+  offset: number;
+  epoch: string;
+  recoverable: boolean;
+  // Its subscribed event was emitted and no subscribing event since.
+  subscribed?: boolean;
+}
+
+type CallResolveContext = { reply: any; next?: () => void };
+type CallRejectContext = { error: any; next?: () => void };
+
+export class UnauthorizedError extends Error {
+  constructor(message: any) {
+    super(message);
+    this.name = this.constructor.name;
+  }
+}
+
+/** Centrifuge is a Centrifuge/Centrifugo bidirectional client. */
+export class Centrifuge extends (EventEmitter as new () => TypedEventEmitter<ClientEvents>) {
+  state: State;
+  private _transportIsOpen: boolean;
+  private _endpoint: string | Array<TransportEndpoint>;
+  private _emulation: boolean;
+  private _transports: any[];
+  private _currentTransportIndex: number;
+  private _triedAllTransports: boolean;
+  private _transportWasOpen: boolean;
+  private _transport?: any;
+  private _transportId: number;
+  private _deviceWentOffline: boolean;
+  private _transportClosed: boolean;
+  private _reconnecting: boolean;
+  private _reconnectTimeout?: null | ReturnType<typeof setTimeout> = null;
+  private _connectTimeout: null | ReturnType<typeof setTimeout> = null;
+  private _reconnectAttempts: number;
+  private _client: null;
+  private _session: string;
+  private _node: string;
+  private _subs: Record<string, _BaseSubscription>;
+  // Unsubscribes still in progress of subscriptions removed from the client, per channel.
+  private _removedUnsubscribes: Record<string, Promise<void>> = {};
+  // The offset of the publication being dispatched, per server-side channel, until its
+  // handler returned. See _handlePublication and the subs of _constructConnectCommand.
+  private _pendingServerSubOffsets: Record<string, number | null> = {};
+  private _serverSubs: Record<string, serverSubscription>;
+  private _commandId: number;
+  private _commands: any[];
+  private _batching: boolean;
+  private _refreshRequired: boolean;
+  private _refreshTimeout?: null | ReturnType<typeof setTimeout> = null;
+  private _callbacks: Record<number, any>;
+  private _token: string;
+  private _data: any;
+  private _dispatchPromise: Promise<void>;
+  private _serverPing: number;
+  private _serverPingTimeout?: null | ReturnType<typeof setTimeout> = null;
+  private _sendPong: boolean;
+  private _promises: Record<number, any>;
+  private _promiseId: number;
+  private _networkEvents: { target: EventTarget; onOffline: () => void; onOnline: () => void } | null;
+  private _stateTransitions: number;
+  private _disconnects: number;
+  private _abortedTransportId: number;
+  private _reconnectAttemptsResetPending: boolean;
+
+  private _debugEnabled: boolean;
+  private _config: Options;
+  protected _codec: any;
+
+  static SubscriptionState: typeof SubscriptionState;
+  static State: typeof State;
+  static UnauthorizedError: typeof UnauthorizedError;
+
+  /** Constructs Centrifuge client. Call connect() method to start connecting. */
+  constructor(endpoint: string | Array<TransportEndpoint>, options?: Partial<Options>) {
+    super();
+    this.state = State.Disconnected;
+    this._transportIsOpen = false;
+    this._endpoint = endpoint;
+    this._emulation = false;
+    this._transports = [];
+    this._currentTransportIndex = 0;
+    this._triedAllTransports = false;
+    this._transportWasOpen = false;
+    this._transport = null;
+    this._transportId = 0;
+    this._deviceWentOffline = false;
+    this._transportClosed = true;
+    this._codec = new JsonCodec();
+    this._reconnecting = false;
+    this._reconnectTimeout = null;
+    this._connectTimeout = null;
+    this._reconnectAttempts = 0;
+    this._client = null;
+    this._session = '';
+    this._node = '';
+    this._subs = {};
+    this._serverSubs = {};
+    this._commandId = 0;
+    this._commands = [];
+    this._batching = false;
+    this._refreshRequired = false;
+    this._refreshTimeout = null;
+    this._callbacks = {};
+    this._token = '';
+    this._data = null;
+    this._dispatchPromise = Promise.resolve();
+    this._serverPing = 0;
+    this._serverPingTimeout = null;
+    this._sendPong = false;
+    this._promises = {};
+    this._promiseId = 0;
+    this._debugEnabled = false;
+    this._networkEvents = null;
+    this._stateTransitions = 0;
+    this._disconnects = 0;
+    this._abortedTransportId = 0;
+    this._reconnectAttemptsResetPending = false;
+
+    this._config = { ...defaults, ...options };
+    this._configure();
+
+    if (this._debugEnabled) {
+      this.on('state', (ctx) => {
+        this._debug('client state', ctx.oldState, '->', ctx.newState);
+      });
+      this.on('error', (ctx) => {
+        this._debug('client error', ctx);
+      });
+    } else {
+      // Avoid unhandled exception in EventEmitter for non-set error handler.
+      this.on('error', function () { Function.prototype(); });
+    }
+  }
+
+  /** newSubscription allocates new Subscription to a channel. Since server only allows
+   * one subscription per channel per client this method throws if client already has
+   * channel subscription in internal registry.
+   * */
+  newSubscription(channel: string, options?: SubscriptionOptions): Subscription {
+    if (this.getSubscription(channel) !== null) {
+      throw new Error('Subscription to the channel ' + channel + ' already exists');
+    }
+    const sub = new Subscription(this, channel, options);
+    this._subs[channel] = sub;
+    return sub;
+  }
+
+  /** newMapSubscription allocates new map Subscription to a channel. Since server only allows
+   * one subscription per channel per client this method throws if client already has
+   * channel subscription in internal registry.
+   *
+   * Experimental. Requires Centrifugo >= v6.8.0. API may change in a backwards-incompatible
+   * way in subsequent minor releases. */
+  newMapSubscription(channel: string, options?: MapSubscriptionOptions): MapSubscription {
+    if (this.getSubscription(channel) !== null) {
+      throw new Error('Subscription to the channel ' + channel + ' already exists');
+    }
+    const sub = new _MapSubscription(this, channel, {
+      token: options?.token,
+      getToken: options?.getToken,
+      data: options?.data,
+      minResubscribeDelay: options?.minResubscribeDelay,
+      maxResubscribeDelay: options?.maxResubscribeDelay,
+      delta: options?.delta,
+      tagsFilter: options?.tagsFilter,
+      map: true,
+      mapPageSize: options?.pageSize,
+      mapUnrecoverableStrategy: options?.unrecoverableStrategy,
+    });
+    this._subs[channel] = sub;
+    return sub as unknown as MapSubscription;
+  }
+
+  /** Create a map subscription for observing individual connections (clients presence).
+   * Each entry has key=clientId and contains full ClientInfo.
+   * Use this to track connections per channel.
+   * The channel should be the full presence channel name (e.g., "$clients:games").
+   *
+   * Experimental. Requires Centrifugo >= v6.8.0. API may change in a backwards-incompatible
+   * way in subsequent minor releases. */
+  newMapClientsSubscription(channel: string, options?: MapSubscriptionOptions): MapSubscription {
+    if (this.getSubscription(channel) !== null) {
+      throw new Error('Subscription to the channel ' + channel + ' already exists');
+    }
+    const sub = new _MapSubscription(this, channel, {
+      token: options?.token,
+      getToken: options?.getToken,
+      data: options?.data,
+      minResubscribeDelay: options?.minResubscribeDelay,
+      maxResubscribeDelay: options?.maxResubscribeDelay,
+      delta: options?.delta,
+      tagsFilter: options?.tagsFilter,
+      map: true,
+      mapPresenceType: 2, // MAP_CLIENTS_PRESENCE
+      mapPageSize: options?.pageSize,
+      mapUnrecoverableStrategy: options?.unrecoverableStrategy,
+    });
+    this._subs[channel] = sub;
+    return sub as unknown as MapSubscription;
+  }
+
+  /** Create a map subscription for observing unique users (users presence).
+   * Each entry has key=userId (no ClientInfo stored).
+   * User entries expire via TTL, providing debounce for quick reconnects.
+   * The channel should be the full presence channel name (e.g., "$users:games").
+   *
+   * Experimental. Requires Centrifugo >= v6.8.0. API may change in a backwards-incompatible
+   * way in subsequent minor releases. */
+  newMapUsersSubscription(channel: string, options?: MapSubscriptionOptions): MapSubscription {
+    if (this.getSubscription(channel) !== null) {
+      throw new Error('Subscription to the channel ' + channel + ' already exists');
+    }
+    const sub = new _MapSubscription(this, channel, {
+      token: options?.token,
+      getToken: options?.getToken,
+      data: options?.data,
+      minResubscribeDelay: options?.minResubscribeDelay,
+      maxResubscribeDelay: options?.maxResubscribeDelay,
+      delta: options?.delta,
+      tagsFilter: options?.tagsFilter,
+      map: true,
+      mapPresenceType: 3, // MAP_USERS_PRESENCE
+      mapPageSize: options?.pageSize,
+      mapUnrecoverableStrategy: options?.unrecoverableStrategy,
+    });
+    this._subs[channel] = sub;
+    return sub as unknown as MapSubscription;
+  }
+
+  /** newSharedPollSubscription allocates a new shared poll Subscription to a channel.
+   * Shared poll subscriptions use server-side polling to aggregate interest sets
+   * and deliver periodic updates with version tracking. Track items after subscribing
+   * using the track() method on the returned Subscription.
+   *
+   * Experimental. Requires Centrifugo >= v6.8.0. API may change in a backwards-incompatible
+   * way in subsequent minor releases. */
+  newSharedPollSubscription(channel: string, options?: SharedPollSubscriptionOptions): SharedPollSubscription {
+    if (this.getSubscription(channel) !== null) {
+      throw new Error('Subscription to the channel ' + channel + ' already exists');
+    }
+    const sub = new _SharedPollSubscription(this, channel, {
+      token: options?.token,
+      getToken: options?.getToken,
+      data: options?.data,
+      minResubscribeDelay: options?.minResubscribeDelay,
+      maxResubscribeDelay: options?.maxResubscribeDelay,
+      delta: options?.delta,
+      sharedPoll: true,
+      sharedPollGetSignature: options?.getSignature,
+    });
+    this._subs[channel] = sub;
+    return sub as unknown as SharedPollSubscription;
+  }
+
+  /** getSubscription returns Subscription if it's registered in the internal
+   * registry or null. */
+  getSubscription(channel: string): Subscription | null {
+    return this._getSub(channel) as Subscription | null;
+  }
+
+  /** Get a map subscription by channel. */
+  getMapSubscription(channel: string): MapSubscription | null {
+    return this._getSub(channel) as unknown as MapSubscription | null;
+  }
+
+  /** Get a shared poll subscription by channel. */
+  getSharedPollSubscription(channel: string): SharedPollSubscription | null {
+    return this._getSub(channel) as unknown as SharedPollSubscription | null;
+  }
+
+  /** removeSubscription allows removing Subcription from the internal registry. */
+  removeSubscription(sub: Subscription | null) {
+    if (!sub) {
+      return;
+    }
+    // A subscription removed before must not remove a newer one of its channel.
+    if (this._subs[sub.channel] !== sub) {
+      return;
+    }
+    // Removed before its unsubscribed event: a handler of it may create a new
+    // subscription of the channel, and must not subscribe this one again.
+    delete this._subs[sub.channel];
+    // @ts-ignore – we are hiding some symbols from public API autocompletion.
+    sub._removed = true;
+    if (sub.state !== SubscriptionState.Unsubscribed) {
+      sub.unsubscribe();
+    }
+    this._recordRemovedUnsubscribe(sub);
+  }
+
+  /** Remove a map subscription. */
+  removeMapSubscription(sub: MapSubscription | null) {
+    this.removeSubscription(sub as unknown as Subscription);
+  }
+
+  /** Remove a shared poll subscription. */
+  removeSharedPollSubscription(sub: SharedPollSubscription | null) {
+    this.removeSubscription(sub as unknown as Subscription);
+  }
+
+  /** Get a map with all current client-side subscriptions. */
+  subscriptions(): Record<string, Subscription> {
+    return this._subs as Record<string, Subscription>;
+  }
+
+  /** Get all map subscriptions. */
+  mapSubscriptions(): Record<string, MapSubscription> {
+    const result: Record<string, MapSubscription> = {};
+    for (const [ch, sub] of Object.entries(this._subs)) {
+      if (sub.type === 'map') result[ch] = sub as unknown as MapSubscription;
+    }
+    return result;
+  }
+
+  /** Get all shared poll subscriptions. */
+  sharedPollSubscriptions(): Record<string, SharedPollSubscription> {
+    const result: Record<string, SharedPollSubscription> = {};
+    for (const [ch, sub] of Object.entries(this._subs)) {
+      if (sub.type === 'shared_poll') result[ch] = sub as unknown as SharedPollSubscription;
+    }
+    return result;
+  }
+
+  /** ready returns a Promise which resolves upon client goes to Connected 
+   * state and rejects in case of client goes to Disconnected or Failed state.
+   * Users can provide optional timeout in milliseconds. */
+  async ready(timeout?: number): Promise<void> {
+    switch (this.state) {
+      case State.Disconnected:
+        throw { code: errorCodes.clientDisconnected, message: 'client disconnected' };
+
+      case State.Connected:
+        return;
+
+      default:
+        return new Promise((resolve, reject) => {
+          const id = this._nextPromiseId();
+          const ctx: any = { resolve, reject };
+
+          if (timeout) {
+            ctx.timeout = setTimeout(() => {
+              // A call that gave up waiting leaves no waiter behind.
+              delete this._promises[id];
+              reject({ code: errorCodes.timeout, message: 'timeout' });
+            }, timeout);
+          }
+
+          this._promises[id] = ctx;
+        });
+    }
+  }
+
+  /** connect to a server. */
+  connect() {
+    if (this._isConnected()) {
+      this._debug('connect called when already connected');
+      return;
+    }
+    if (this._isConnecting()) {
+      this._debug('connect called when already connecting');
+      return;
+    }
+    this._debug('connect called');
+    // Throws for a configuration no retry can fix, before the state changes.
+    this._validateTransportConfig();
+    this._reconnectAttempts = 0;
+    this._startConnecting();
+  }
+
+  /** disconnect from a server. */
+  disconnect() {
+    this._disconnect(disconnectedCodes.disconnectCalled, 'disconnect called', false);
+  }
+
+  /** setToken allows setting connection token. Or resetting used token to be empty.  */
+  setToken(token: string) {
+    this._token = token;
+    if (this._config.getToken === null) {
+      // The token expired, and the app set a new one: without getToken there is no
+      // other way to get it, so the next attempt uses it instead of failing on a
+      // configuration error. With getToken, the next attempt still gets a new token:
+      // the one set meanwhile may be the expired one.
+      this._refreshRequired = false;
+    }
+  }
+
+  /** setData allows setting connection data. This only affects the next connection attempt,
+   * not the current one. Note that if getData callback is configured, it will override
+   * this value during reconnects. */
+  setData(data: any) {
+    this._data = data;
+  }
+
+  /** setHeaders allows setting connection emulated headers. */
+  setHeaders(headers: { [key: string]: string }) {
+    this._config.headers = headers;
+  }
+
+  /** send asynchronous data to a server (without any response from a server 
+   * expected, see rpc method if you need response). */
+  async send(data: any): Promise<void> {
+    const cmd = {
+      send: {
+        data
+      }
+    };
+
+    await this._methodCall();
+
+    const sent = this._transportSendCommands([cmd]); // can send message to server without id set
+
+    if (!sent) {
+      throw this._createErrorObject(
+        errorCodes.transportWriteError,
+        'transport write error'
+      );
+    }
+  }
+
+  /** rpc to a server - i.e. a call which waits for a response with data. */
+  async rpc(method: string, data: any): Promise<RpcResult> {
+    const cmd = {
+      rpc: {
+        method,
+        data
+      }
+    };
+
+    await this._methodCall();
+    const result = await this._callPromise(cmd, (reply: any) => reply.rpc);
+    return {
+      data: result.data
+    };
+  }
+
+  /** publish data to a channel. */
+  async publish(channel: string, data: any): Promise<PublishResult> {
+    const cmd = {
+      publish: {
+        channel,
+        data
+      }
+    };
+
+    await this._methodCall();
+    await this._callPromise(cmd, () => ({}));
+    return {};
+  }
+
+  /** Publish data to a key in a map channel without holding a MapSubscription.
+   * Use this when you need to write to a map channel from outside a subscription
+   * context (e.g. a standalone publisher). When you already hold a MapSubscription,
+   * prefer `sub.publish(key, data)` instead — it enforces the method-call guard and
+   * applies debounce configuration. */
+  async mapPublish(channel: string, key: string, data: any): Promise<PublishResult> {
+    const cmd = {
+      publish: { channel, type: 1, key, data }
+    };
+    await this._methodCall();
+    await this._callPromise(cmd, () => ({}));
+    return {};
+  }
+
+  /** Remove a key from a map channel without holding a MapSubscription.
+   * Use this when you need to remove a key from outside a subscription context.
+   * When you already hold a MapSubscription, prefer `sub.remove(key)` instead —
+   * it enforces the method-call guard and cancels any pending debounced publish. */
+  async mapRemove(channel: string, key: string): Promise<PublishResult> {
+    const cmd = {
+      publish: { channel, type: 1, key, removed: true }
+    };
+    await this._methodCall();
+    await this._callPromise(cmd, () => ({}));
+    return {};
+  }
+
+  /** history for a channel. By default it does not return publications (only current
+   *  StreamPosition data) – provide an explicit limit > 0 to load publications.*/
+  async history(channel: string, options?: HistoryOptions): Promise<HistoryResult> {
+    const cmd = {
+      history: this._getHistoryRequest(channel, options)
+    };
+
+    await this._methodCall();
+
+    const result = await this._callPromise(cmd, (reply: any) => reply.history);
+
+    const publications: any[] = [];
+
+    if (result.publications) {
+      for (let i = 0; i < result.publications.length; i++) {
+        publications.push(this._getPublicationContext(channel, result.publications[i]));
+      }
+    }
+
+    return {
+      publications,
+      epoch: result.epoch || '',
+      offset: toOffset(result.offset)
+    };
+  }
+
+  /** presence for a channel. */
+  async presence(channel: string): Promise<PresenceResult> {
+    const cmd = {
+      presence: {
+        channel
+      }
+    };
+
+    await this._methodCall();
+    const result = await this._callPromise(cmd, (reply: any) => reply.presence);
+
+    const clients = result.presence;
+
+    for (const clientId in clients) {
+      if (Object.prototype.hasOwnProperty.call(clients, clientId)) {
+        const rawClient = clients[clientId];
+        const connInfo = rawClient['conn_info'];
+        const chanInfo = rawClient['chan_info'];
+        if (connInfo) {
+          rawClient.connInfo = connInfo;
+        }
+        if (chanInfo) {
+          rawClient.chanInfo = chanInfo;
+        }
+      }
+    }
+
+    return { clients };
+  }
+
+  async presenceStats(channel: string): Promise<PresenceStatsResult> {
+    const cmd: any = {
+      'presence_stats': {
+        channel
+      }
+    };
+
+    await this._methodCall();
+
+    const result = await this._callPromise(cmd, (reply: any) => {
+      return reply.presence_stats;
+    });
+
+    return {
+      numUsers: result.num_users,
+      numClients: result.num_clients
+    };
+  }
+
+  /** start command batching (collect into temporary buffer without sending to a server) 
+   * until stopBatching called.*/
+  startBatching() {
+    // start collecting messages without sending them to Centrifuge until flush
+    // method called
+    this._batching = true;
+  }
+
+  /** stop batching commands and flush collected commands to the 
+   * network (all in one request/frame).*/
+  stopBatching() {
+    const self = this;
+    // Why so nested? Two levels here requred to deal with promise resolving queue.
+    // In Subscription case we wait 2 futures before sending data to connection.
+    // Otherwise _batching becomes false before batching decision has a chance to be executed.
+    Promise.resolve().then(function () {
+      Promise.resolve().then(function () {
+        self._batching = false;
+        self._flush();
+      })
+    })
+  }
+
+  private _debug(...args: any[]) {
+    if (!this._debugEnabled) {
+      return;
+    }
+    log('debug', args);
+  }
+
+  private _codecName(): string {
+    return this._codec.name()
+  }
+
+  /** @internal */
+  protected _formatOverride() {
+    return;
+  }
+
+  private _configure() {
+    if (!('Promise' in globalThis)) {
+      throw new Error('Promise polyfill required');
+    }
+
+    if (!this._endpoint) {
+      throw new Error('endpoint configuration required');
+    }
+
+    if (this._config.token !== null) {
+      this._token = this._config.token;
+    }
+
+    if (this._config.data !== null) {
+      this._data = this._config.data;
+    }
+
+    this._codec = new JsonCodec();
+    this._formatOverride();
+
+    if (this._config.debug === true || localStorageItem('centrifuge.debug')) {
+      this._debugEnabled = true;
+    }
+
+    this._debug('config', this._config);
+
+    if (typeof this._endpoint === 'string') {
+      // Single address.
+    } else if (Array.isArray(this._endpoint)) {
+      this._transports = this._endpoint;
+      this._emulation = true;
+      for (const i in this._transports) {
+        if (this._transports.hasOwnProperty(i)) {
+          const transportConfig = this._transports[i];
+          if (!transportConfig.endpoint || !transportConfig.transport) {
+            throw new Error('malformed transport configuration');
+          }
+          const transportName = transportConfig.transport;
+          if (['websocket', 'http_stream', 'sse', 'sockjs', 'webtransport'].indexOf(transportName) < 0) {
+            throw new Error('unsupported transport name: ' + transportName);
+          }
+        }
+      }
+    } else {
+      throw new Error('unsupported url configuration type: only string or array of objects are supported');
+    }
+  }
+
+  // Returns the number of the transition made, or 0 if the client already was in newState.
+  private _setState(newState: State): number {
+    if (this.state !== newState) {
+      this._reconnecting = false;
+      const oldState = this.state;
+      this.state = newState;
+      const transition = ++this._stateTransitions;
+      // Keep network listeners in sync with the state before emitting: a 'state'
+      // handler may call connect() or disconnect() synchronously.
+      if (newState === State.Connecting) {
+        this._setNetworkEvents();
+      } else if (newState === State.Disconnected) {
+        this._clearNetworkEvents();
+      }
+      this.emit('state', { newState, oldState });
+      return transition;
+    }
+    return 0;
+  }
+
+  // Whether an event handler made another state transition after the given one
+  // (as returned by _setState), so that the given one is outdated.
+  private _transitionSuperseded(transition: number): boolean {
+    return transition !== 0 && this._stateTransitions !== transition;
+  }
+
+  private _isDisconnected() {
+    return this.state === State.Disconnected;
+  }
+
+  private _isConnecting() {
+    return this.state === State.Connecting;
+  }
+
+  private _isConnected() {
+    return this.state === State.Connected;
+  }
+
+  private _nextCommandId() {
+    return ++this._commandId;
+  }
+
+  private _setNetworkEvents() {
+    if (this._networkEvents !== null) {
+      return;
+    }
+    let eventTarget: EventTarget | null = null;
+    if (this._config.networkEventTarget !== null) {
+      eventTarget = this._config.networkEventTarget;
+    } else if (typeof globalThis.addEventListener !== 'undefined') {
+      eventTarget = globalThis as EventTarget;
+    }
+    if (eventTarget) {
+      const onOffline = () => {
+        this._debug('offline event triggered');
+        if (this.state === State.Connected || this.state === State.Connecting) {
+          // Set first: a handler of the events emitted by the disconnect may call
+          // disconnect(), which resets it.
+          this._deviceWentOffline = true;
+          this._disconnect(connectingCodes.transportClosed, 'transport closed', true);
+        }
+      };
+      const onOnline = () => {
+        this._debug('online event triggered');
+        const wentOffline = this._deviceWentOffline;
+        this._deviceWentOffline = false;
+        if (this.state !== State.Connecting) {
+          return;
+        }
+        if (wentOffline && !this._transportClosed) {
+          // A reconnect attempt opened a transport while the device was offline.
+          // Mobile Safari may never issue the close callback for it, so abort it
+          // explicitly and start over. The transport ID changes, so a close
+          // callback issued later is ignored. The rejection of a connect command
+          // still pending on it is not an error to report (see _sendConnect).
+          this._abortedTransportId = this._transportId;
+          this._disconnect(connectingCodes.transportClosed, 'transport closed', true);
+        }
+        this._clearReconnectTimeout();
+        this._startReconnecting();
+      };
+      eventTarget.addEventListener('offline', onOffline);
+      eventTarget.addEventListener('online', onOnline);
+      this._networkEvents = { target: eventTarget, onOffline, onOnline };
+    }
+  }
+
+  // The online listener drives reconnect, so listeners stay until the client is
+  // disconnected; removing them then lets a disconnected client be garbage-collected.
+  private _clearNetworkEvents() {
+    if (this._networkEvents === null) {
+      return;
+    }
+    const { target, onOffline, onOnline } = this._networkEvents;
+    if (!isFunction(target.removeEventListener)) {
+      this._debug('network event target has no removeEventListener, listeners kept');
+      return;
+    }
+    target.removeEventListener('offline', onOffline);
+    target.removeEventListener('online', onOnline);
+    this._networkEvents = null;
+  }
+
+  private _getReconnectDelay() {
+    const delay = backoff(this._reconnectAttempts, this._config.minReconnectDelay, this._config.maxReconnectDelay);
+    this._reconnectAttempts += 1;
+    return delay;
+  }
+
+  // See _connectResponse: an emulation connection resets the backoff once it
+  // proved usable.
+  private _resetReconnectAttemptsIfPending() {
+    if (this._reconnectAttemptsResetPending) {
+      this._reconnectAttemptsResetPending = false;
+      this._reconnectAttempts = 0;
+    }
+  }
+
+  private _clearOutgoingRequests() {
+    // fire errbacks of registered outgoing calls.
+    for (const id in this._callbacks) {
+      if (this._callbacks.hasOwnProperty(id)) {
+        const callbacks = this._callbacks[id];
+        clearTimeout(callbacks.timeout);
+        const errback = callbacks.errback;
+        if (!errback) {
+          continue;
+        }
+        errback({ error: this._createErrorObject(errorCodes.connectionClosed, 'connection closed') });
+      }
+    }
+    this._callbacks = {};
+  }
+
+  private _clearConnectedState() {
+    this._client = null;
+    this._clearServerPingTimeout();
+    this._clearRefreshTimeout();
+
+    // fire events for client-side subscriptions.
+    for (const channel in this._subs) {
+      if (!this._subs.hasOwnProperty(channel)) {
+        continue;
+      }
+      const sub = this._subs[channel];
+      if (sub.state === SubscriptionState.Subscribed) {
+        // @ts-ignore – we are hiding some symbols from public API autocompletion.
+        sub._setSubscribing(subscribingCodes.transportClosed, 'transport closed');
+      }
+    }
+
+    // fire events for server-side subscriptions, once per subscribed period.
+    for (const channel in this._serverSubs) {
+      if (this._serverSubs.hasOwnProperty(channel) && this._serverSubs[channel].subscribed) {
+        this._serverSubs[channel].subscribed = false;
+        this.emit('subscribing', { channel: channel });
+      }
+    }
+  }
+
+  private _handleWriteError(commands: any[]) {
+    for (const command of commands) {
+      const id = command.id;
+      if (!(id in this._callbacks)) {
+        continue;
+      }
+      const callbacks = this._callbacks[id];
+      clearTimeout(this._callbacks[id].timeout);
+      delete this._callbacks[id];
+      const errback = callbacks.errback;
+      errback({ error: this._createErrorObject(errorCodes.transportWriteError, 'transport write error') });
+    }
+  }
+
+  private _transportSendCommands(commands: any[]) {
+    if (!commands.length) {
+      return true;
+    }
+    if (!this._transport) {
+      return false
+    }
+    try {
+      this._transport.send(this._codec.encodeCommands(commands), this._session, this._node);
+    } catch (e) {
+      this._debug('error writing commands', e);
+      this._handleWriteError(commands);
+      return false;
+    }
+    return true;
+  }
+
+  private _advanceTransportIndex() {
+    this._currentTransportIndex++;
+    if (this._currentTransportIndex >= this._transports.length) {
+      this._triedAllTransports = true;
+      this._currentTransportIndex = 0;
+    }
+  }
+
+  // Transport dependencies from the config, or else from globals. An absent one
+  // stays null, not undefined: supported() of sockjs, sse and http_stream only
+  // checks `!== null`.
+  private _resolveTransportDeps() {
+    let websocket: any;
+    if (this._config.websocket !== null) {
+      websocket = this._config.websocket;
+    } else {
+      if (!(typeof globalThis.WebSocket !== 'function' && typeof globalThis.WebSocket !== 'object')) {
+        websocket = globalThis.WebSocket;
+      }
+    }
+
+    let sockjs = null;
+    if (this._config.sockjs !== null) {
+      sockjs = this._config.sockjs;
+    } else {
+      if (typeof globalThis.SockJS !== 'undefined') {
+        sockjs = globalThis.SockJS;
+      }
+    }
+
+    let eventsource: any = null;
+    if (this._config.eventsource !== null) {
+      eventsource = this._config.eventsource;
+    } else {
+      if (typeof globalThis.EventSource !== 'undefined') {
+        eventsource = globalThis.EventSource;
+      }
+    }
+
+    let fetchFunc: any = null;
+    if (this._config.fetch !== null) {
+      fetchFunc = this._config.fetch;
+    } else {
+      if (typeof globalThis.fetch !== 'undefined') {
+        fetchFunc = globalThis.fetch;
+      }
+    }
+
+    let readableStream: any = null;
+    if (this._config.readableStream !== null) {
+      readableStream = this._config.readableStream;
+    } else {
+      if (typeof globalThis.ReadableStream !== 'undefined') {
+        readableStream = globalThis.ReadableStream;
+      }
+    }
+
+    return { websocket, sockjs, eventsource, fetchFunc, readableStream };
+  }
+
+  // Constructs a transport, without checking that it is supported.
+  private _createTransport(transportName: string, endpoint: string, deps: any): any {
+    switch (transportName) {
+      case 'websocket':
+        return new WebsocketTransport(endpoint, {
+          websocket: deps.websocket
+        });
+      case 'webtransport':
+        return new WebtransportTransport(endpoint, {
+          webtransport: globalThis.WebTransport,
+          decoder: this._codec,
+          encoder: this._codec
+        });
+      case 'http_stream':
+        return new HttpStreamTransport(endpoint, {
+          fetch: deps.fetchFunc,
+          readableStream: deps.readableStream,
+          emulationEndpoint: this._config.emulationEndpoint,
+          decoder: this._codec,
+          encoder: this._codec
+        });
+      case 'sse':
+        return new SseTransport(endpoint, {
+          eventsource: deps.eventsource,
+          fetch: deps.fetchFunc,
+          emulationEndpoint: this._config.emulationEndpoint,
+        });
+      case 'sockjs':
+        return new SockjsTransport(endpoint, {
+          sockjs: deps.sockjs,
+          sockjsOptions: this._config.sockjsOptions
+        });
+      default:
+        throw new Error('unknown transport ' + transportName);
+    }
+  }
+
+  // Throws for a configuration no retry can fix. Called from connect() before
+  // the state changes, so the client stays disconnected, and before a token or
+  // data is loaded, so it fails the same way with getToken or getData.
+  private _validateTransportConfig() {
+    const deps = this._resolveTransportDeps();
+    if (!this._emulation) {
+      if (startsWith(this._endpoint, 'http')) {
+        throw new Error('Provide explicit transport endpoints configuration in case of using HTTP (i.e. using array of TransportEndpoint instead of a single string), or use ws(s):// scheme in an endpoint if you aimed using WebSocket transport');
+      }
+      if (!this._createTransport('websocket', this._endpoint as string, deps).supported()) {
+        throw new Error(websocketNotFound);
+      }
+      return;
+    }
+    for (const transportConfig of this._transports) {
+      if (this._createTransport(transportConfig.transport, transportConfig.endpoint, deps).supported()) {
+        return;
+      }
+    }
+    throw new Error('no supported transport found');
+  }
+
+  private _initializeTransport() {
+    const deps = this._resolveTransportDeps();
+    let selected: any = null;
+    if (!this._emulation) {
+      this._debug('client will use websocket');
+      const candidate = this._createTransport('websocket', this._endpoint as string, deps);
+      if (candidate.supported()) {
+        selected = candidate;
+      }
+    } else {
+      if (this._currentTransportIndex >= this._transports.length) {
+        this._triedAllTransports = true;
+        this._currentTransportIndex = 0;
+      }
+      for (let count = 0; count < this._transports.length; count++) {
+        const transportConfig = this._transports[this._currentTransportIndex];
+        this._debug('trying ' + transportConfig.transport + ' transport');
+        const candidate = this._createTransport(transportConfig.transport, transportConfig.endpoint, deps);
+        if (candidate.supported()) {
+          selected = candidate;
+          break;
+        }
+        this._debug(transportConfig.transport + ' transport not available');
+        this._advanceTransportIndex();
+      }
+    }
+    if (selected === null) {
+      // connect() checked that a transport can be used, so a dependency went away
+      // under a running client. A reconnect timer has no caller to throw to:
+      // report it as a transport failure and retry.
+      const message = this._emulation ? 'no supported transport found' : websocketNotFound;
+      this._debug(message);
+      this._disconnect(connectingCodes.transportClosed, 'transport closed', true);
+      this.emit('error', {
+        type: 'transport',
+        error: {
+          code: errorCodes.transportClosed,
+          message: message
+        }
+      });
+      return;
+    }
+    this._transport = selected;
+
+    const self = this;
+    const transport = this._transport;
+    const transportId = this._nextTransportId();
+    self._debug("id of transport", transportId);
+    let wasOpen = false;
+    const initialCommands: any[] = [];
+
+    if (this._transport.emulation()) {
+      const connectCommand = self._sendConnect(true);
+      initialCommands.push(connectCommand);
+    }
+
+    this._transportClosed = false;
+
+    // Fails an attempt that did not open in time or could not be initialized. It
+    // does not wait for the transport's close callback: a transport may never
+    // issue one, e.g. a replaced WebSocket whose close() does nothing.
+    const failTransport = function (reason: string) {
+      if (self._transportId != transportId) {
+        self._debug('failure of non-actual transport', reason);
+        return;
+      }
+      self._debug(transport.name(), 'transport failed:', reason);
+      if (self._emulation && !self._transportWasOpen) {
+        self._advanceTransportIndex();
+      }
+      // The teardown rejects a connect command pending on it: the transport error
+      // below reports the failure, not a connect error too.
+      self._abortedTransportId = transportId;
+      // Closes the transport and clears the connect timeout.
+      self._disconnect(connectingCodes.transportClosed, 'transport closed', true);
+      self.emit('error', {
+        type: 'transport',
+        error: {
+          code: errorCodes.transportClosed,
+          message: reason
+        },
+        transport: transport.name()
+      });
+    };
+
+    this._clearConnectTimeout();
+    const connectDue = Date.now() + this._config.timeout;
+    this._connectTimeout = setTimeout(function () {
+      // The transport may have opened already, its open callback not run yet, e.g.
+      // when a suspended process resumes: let it run first, as for a call (see
+      // _registerCall). The open callback clears this timeout.
+      const late = Date.now() - connectDue >= lateCallTimer;
+      self._connectTimeout = setTimeout(function () {
+        self._connectTimeout = null;
+        failTransport('connect timeout');
+      }, late ? lateCallGrace : 0);
+    }, this._config.timeout);
+
+    const callbacks = {
+      onOpen: function () {
+        if (self._transportId != transportId) {
+          self._debug('open callback from non-actual transport');
+          try {
+            transport.close();
+          } catch (e) {
+            // E.g. a replaced WebSocket without a working close().
+            self._debug('error closing transport', e);
+          }
+          return;
+        }
+        // Only after the check: the connect timeout belongs to the current attempt.
+        self._clearConnectTimeout();
+        wasOpen = true;
+        self._debug(transport.subName(), 'transport open');
+        if (transport.emulation()) {
+          return;
+        }
+        self._transportIsOpen = true;
+        // A socket that opened keeps its transport, as in 5.7.4: a slow first connect
+        // reply must not move the client to a fallback transport for good.
+        self._transportWasOpen = true;
+        self.startBatching();
+        try {
+          self._sendConnect(false);
+          self._sendSubscribeCommands();
+        } catch (e) {
+          // E.g. thrown by an app callback of a subscription: the commands collected
+          // still go out, instead of staying batched for the next transport.
+          self._reportDispatchError(e);
+        } finally {
+          self.stopBatching();
+        }
+        //@ts-ignore must be used only for debug and test purposes. Exposed only for non-emulation transport.
+        self.emit('__centrifuge_debug:connect_frame_sent', {})
+      },
+      onError: function (e: any) {
+        if (self._transportId != transportId) {
+          self._debug('error callback from non-actual transport');
+          return;
+        }
+        self._debug('transport level error', e);
+      },
+      onClose: function handleClose(closeEvent: any, dispatched?: boolean) {
+        if (self._transportId != transportId) {
+          self._debug('close callback from non-actual transport');
+          return;
+        }
+        if (!dispatched && (transport.emulation() || transport.name() === 'webtransport')) {
+          // A stream may end in the same task as the data read before it, e.g. the
+          // server's disconnect push written before it closes the connection: that
+          // data is dispatched first, as a websocket's messages are before its close
+          // event. A disconnect push ends this transport, and this callback with it.
+          self._dispatchPromise.then(() => handleClose(closeEvent, true));
+          return;
+        }
+        self._clearConnectTimeout();
+        self._debug(transport.subName(), 'transport closed');
+        self._transportClosed = true;
+        self._transportIsOpen = false;
+
+        let reason = 'connection closed';
+        let needReconnect = true;
+        let code = 0;
+
+        if (closeEvent && 'code' in closeEvent && closeEvent.code) {
+          code = closeEvent.code;
+        }
+
+        if (closeEvent && closeEvent.reason) {
+          try {
+            const advice = JSON.parse(closeEvent.reason);
+            reason = advice.reason;
+            needReconnect = advice.reconnect;
+          } catch (e) {
+            reason = closeEvent.reason;
+            if ((code >= 3500 && code < 4000) || (code >= 4500 && code < 5000)) {
+              needReconnect = false;
+            }
+          }
+        }
+
+        if (code < 3000) {
+          if (code === 1009) {
+            code = disconnectedCodes.messageSizeLimit;
+            reason = 'message size limit exceeded';
+            needReconnect = false;
+          } else {
+            code = connectingCodes.transportClosed;
+            reason = 'transport closed';
+          }
+          if (self._emulation && !self._transportWasOpen) {
+            self._advanceTransportIndex();
+          }
+        } else {
+          // Codes >= 3000 are sent from a server application level.
+          self._transportWasOpen = true;
+        }
+
+        const teardown = function () {
+          self._reconnecting = false;
+          self._disconnect(code, reason, needReconnect);
+        };
+        if (self._isConnecting() && !wasOpen) {
+          // The teardown rejects a connect command pending on it (emulation): this
+          // transport error reports the failure, not a connect error too.
+          self._abortedTransportId = transportId;
+          self._emitError({
+            type: 'transport',
+            error: {
+              code: errorCodes.transportClosed,
+              message: 'transport closed'
+            },
+            transport: transport.name()
+          }, teardown);
+        } else {
+          teardown();
+        }
+      },
+      onMessage: function (data) {
+        if (self._transportId != transportId) {
+          // A frame from a transport that was already closed or replaced.
+          self._debug('message from non-actual transport');
+          return;
+        }
+        self._dataReceived(data, transportId);
+      }
+    };
+
+    // A transport that fails to initialize, e.g. a socket constructor throwing on
+    // a malformed URL or on an insecure one from a secure page, issues no close
+    // callback either.
+    const onInitializeError = function (e: any) {
+      self._debug('error initializing transport', e);
+      failTransport(e instanceof Error ? e.message : String(e));
+    };
+
+    let initialized: any;
+    try {
+      // Encoded here: commands the codec can't encode, e.g. connect data with a BigInt,
+      // fail the attempt as a transport failing to initialize, not connect().
+      initialized = transport.initialize(this._codecName(), callbacks, this._codec.encodeCommands(initialCommands));
+    } catch (e) {
+      onInitializeError(e);
+      return;
+    }
+    if (initialized && isFunction(initialized.then)) {
+      // WebTransport initializes asynchronously.
+      initialized.then(null, onInitializeError);
+    }
+    //@ts-ignore must be used only for debug and test purposes.
+    self.emit('__centrifuge_debug:transport_initialized', {})
+  }
+
+  private _sendConnect(skipSending: boolean): any {
+    const connectCommand = this._constructConnectCommand();
+    const self = this;
+    // A teardown rejects the pending command, and the rejection is processed after
+    // it: a newer attempt may have started by then, which must not be torn down.
+    const transportId = this._transportId;
+    const token = this._token;
+    // An exception while handling the reply stops the client (see _dispatchFailed).
+    // next() is still called, so replies of a later connection aren't blocked.
+    this._call(connectCommand, skipSending).then(resolveCtx => {
+      try {
+        self._connectResponse(resolveCtx.reply.connect);
+      } catch (err) {
+        self._dispatchFailed(err);
+      } finally {
+        if (resolveCtx.next) {
+          resolveCtx.next();
+        }
+      }
+    }, rejectCtx => {
+      try {
+        if (transportId === self._abortedTransportId) {
+          self._debug('connect command of a transport aborted by the client rejected');
+        } else {
+          // An error in a reply comes with next(): a rejection by a timeout, a write
+          // error or a teardown doesn't.
+          self._connectError(rejectCtx.error, self._transportId !== transportId, rejectCtx.next !== undefined, token);
+        }
+      } catch (err) {
+        self._rejectionFailed(err, rejectCtx);
+      } finally {
+        if (rejectCtx.next) {
+          rejectCtx.next();
+        }
+      }
+    });
+    return connectCommand;
+  }
+
+  private _startReconnecting() {
+    this._debug('start reconnecting');
+    if (!this._isConnecting()) {
+      this._debug('stop reconnecting: client not in connecting state');
+      return;
+    }
+    if (this._reconnecting) {
+      this._debug('reconnect already in progress, return from reconnect routine');
+      return;
+    }
+    if (this._transportClosed === false) {
+      this._debug('waiting for transport close');
+      return;
+    }
+
+    this._reconnecting = true;
+    // A disconnect while the token/data is loading aborts this attempt (a new one
+    // is scheduled by the disconnect), so the continuations below must not act on
+    // it. Not the transport id: _initializeTransport changes it too, and its
+    // exceptions must still reach the error handlers below.
+    const disconnects = this._disconnects;
+    const emptyToken = this._token === '';
+    const needTokenRefresh = this._refreshRequired || (emptyToken && this._config.getToken !== null);
+    // Whether the token or data promise resolved: an error caught after that was thrown
+    // by the continuation, e.g. by an event handler, and must not be lost.
+    let tokenResolved = false;
+    let dataResolved = false;
+    if (!needTokenRefresh) {
+      if (this._config.getData) {
+        this._getData().then(data => {
+          dataResolved = true;
+          if (this._attemptAborted(disconnects)) {
+            return;
+          }
+          this._data = data;
+          this._initializeTransport();
+        })
+        .catch(e => this._handleGetDataError(e, disconnects, dataResolved));
+      } else {
+        this._initializeTransport();
+      }
+      return;
+    }
+
+    const self = this;
+    this._getToken().then(function (token: string) {
+      tokenResolved = true;
+      if (self._attemptAborted(disconnects)) {
+        return;
+      }
+      if (token == null || token == undefined) {
+        self._failUnauthorized();
+        return;
+      }
+      self._token = token;
+      self._debug('connection token refreshed');
+      if (self._config.getData) {
+        self._getData().then(function (data: any) {
+          dataResolved = true;
+          if (self._attemptAborted(disconnects)) {
+            return;
+          }
+          self._data = data;
+          self._initializeTransport();
+        })
+        .catch(e => self._handleGetDataError(e, disconnects, dataResolved));
+      } else {
+        self._initializeTransport();
+      }
+    }).catch(function (e) {
+      if (self._attemptAborted(disconnects)) {
+        if (tokenResolved) {
+          self._reportDispatchError(e);
+        }
+        return;
+      }
+      if (e instanceof UnauthorizedError) {
+        self._failUnauthorized();
+        return;
+      }
+      self._emitError({
+        'type': 'connectToken',
+        'error': {
+          code: errorCodes.clientConnectToken,
+          message: e !== undefined ? e.toString() : ''
+        }
+      }, () => {
+        const delay = self._getReconnectDelay();
+        self._debug('error on getting connection token, reconnect after ' + delay + ' milliseconds', e);
+        self._reconnecting = false;
+        self._reconnectTimeout = setTimeout(() => {
+          self._startReconnecting();
+        }, delay);
+      });
+    });
+  }
+
+  // Emits an error event, then runs the continuation: also when a handler threw
+  // (the exception propagates afterwards), not when a handler disconnected the
+  // client, maybe to connect again, whose new attempt the continuation must not touch.
+  private _emitError(ctx: any, continuation: () => void) {
+    const disconnects = this._disconnects;
+    try {
+      this.emit('error', ctx);
+    } finally {
+      if (this._disconnects === disconnects) {
+        continuation();
+      }
+    }
+  }
+
+  private _attemptAborted(disconnects: number): boolean {
+    return !this._isConnecting() || this._disconnects !== disconnects;
+  }
+
+  // resolved: the data promise resolved, so the error was thrown by its continuation.
+  private _handleGetDataError(e: any, disconnects: number, resolved: boolean): void {
+    if (this._attemptAborted(disconnects)) {
+      if (resolved) {
+        // E.g. by an event handler of the teardown that ended the attempt.
+        this._reportDispatchError(e);
+      }
+      return;
+    }
+    if (e instanceof UnauthorizedError) {
+      this._failUnauthorized();
+      return;
+    }
+    this._emitError({
+      type: 'connectData',
+      error: {
+        code: errorCodes.badConfiguration,
+        message: e?.toString() || ''
+      }
+    }, () => {
+      const delay = this._getReconnectDelay();
+      this._debug('error on getting connect data, reconnect after ' + delay + ' milliseconds', e);
+      this._reconnecting = false;
+      this._reconnectTimeout = setTimeout(() => {
+        this._startReconnecting();
+      }, delay);
+    });
+  }
+
+  // stale: the error belongs to a transport that was already closed. It is still
+  // reported, but must not tear down the current connection attempt.
+  // replied: the server returned the error in a reply, so the transport works.
+  // token: the token the connect command carried.
+  private _connectError(err: any, stale: boolean, replied: boolean, token: string) {
+    if (this.state !== State.Connecting) {
+      return;
+    }
+    // Token expired: the next attempt gets a new one, unless the app set a new one
+    // meanwhile (see setToken).
+    if (err.code === 109 && token === this._token) {
+      this._refreshRequired = true;
+    }
+    if (err.code < 100 || err.temporary === true || err.code === 109) {
+      this._emitError({
+        'type': 'connect',
+        'error': err
+      }, () => {
+        if (stale) {
+          return;
+        }
+        if (replied) {
+          // The transport reached the server: retry it after the reconnect delay, not
+          // at once with the next transport as for one that failed to open. An
+          // emulation transport is otherwise marked open only by a connect reply.
+          this._transportWasOpen = true;
+        }
+        if (!replied && this._emulation && !this._transportWasOpen) {
+          // A handshake the server never answered, e.g. timed out, moves on to the next
+          // transport before any reply, but not after a socket opened (see onOpen). For
+          // other failures the transport's close callback does that, but it is ignored
+          // after the teardown below.
+          this._advanceTransportIndex();
+        }
+        this._debug('closing transport due to connect error');
+        this._disconnect(err.code, err.message, true);
+      });
+    } else if (!stale) {
+      this._disconnect(err.code, err.message, false);
+    }
+  }
+
+  private _scheduleReconnect() {
+    if (!this._isConnecting()) {
+      return;
+    }
+    let isInitialHandshake = false;
+    if (this._emulation && !this._transportWasOpen && !this._triedAllTransports) {
+      isInitialHandshake = true;
+    }
+    // The first round over the transports doesn't count towards the backoff.
+    const delay = isInitialHandshake ? 0 : this._getReconnectDelay();
+    this._debug('reconnect after ' + delay + ' milliseconds');
+    this._clearReconnectTimeout();
+    this._reconnectTimeout = setTimeout(() => {
+      this._startReconnecting();
+    }, delay);
+  }
+
+  private _constructConnectCommand(): any {
+    const req: any = {};
+
+    if (this._token) {
+      req.token = this._token;
+    }
+    if (this._data) {
+      req.data = this._data;
+    }
+    if (this._config.name) {
+      req.name = this._config.name;
+    }
+    if (this._config.version) {
+      req.version = this._config.version;
+    }
+    if (Object.keys(this._config.headers).length > 0) {
+      req.headers = this._config.headers;
+    }
+
+    const subs = {};
+    let hasSubs = false;
+    for (const channel in this._serverSubs) {
+      if (this._serverSubs.hasOwnProperty(channel) && this._serverSubs[channel].recoverable) {
+        hasSubs = true;
+        const sub = {
+          'recover': true
+        };
+        // A publication being dispatched counts as delivered: a connect command built
+        // from its handler recovers after it, while the stored position still holds
+        // the previous one until that handler returned (see _handlePublication).
+        const pending = this._pendingServerSubOffsets[channel];
+        const offset = pending !== undefined && pending !== null ? pending : this._serverSubs[channel].offset;
+        if (offset) {
+          sub['offset'] = offset;
+        }
+        if (this._serverSubs[channel].epoch) {
+          sub['epoch'] = this._serverSubs[channel].epoch;
+        }
+        subs[channel] = sub;
+      }
+    }
+    if (hasSubs) {
+      req.subs = subs;
+    }
+    return {
+      connect: req
+    };
+  }
+
+  private _getHistoryRequest(channel: string, options?: HistoryOptions) {
+    const req: any = {
+      channel: channel
+    };
+    if (options !== undefined) {
+      if (options.since) {
+        req.since = {
+          offset: options.since.offset
+        };
+        if (options.since.epoch) {
+          req.since.epoch = options.since.epoch;
+        }
+      }
+      if (options.limit !== undefined) {
+        req.limit = options.limit;
+      }
+      if (options.reverse === true) {
+        req.reverse = true;
+      }
+    }
+    return req;
+  }
+
+  private _methodCall(): any {
+    if (this._isConnected()) {
+      return Promise.resolve();
+    }
+    return new Promise((res, rej) => {
+      const id = this._nextPromiseId();
+      const timeout = setTimeout(() => {
+        delete this._promises[id];
+        rej({ code: errorCodes.timeout, message: 'timeout' });
+      }, this._config.timeout);
+      this._promises[id] = {
+        timeout: timeout,
+        resolve: res,
+        reject: rej
+      };
+    });
+  }
+
+  private _callPromise<T = any>(
+    cmd: any,
+    resultCB: (reply: any) => T
+  ): Promise<T> {
+    return new Promise((resolve, reject) => {
+      this._call(cmd, false).then(
+        (resolveCtx: { reply: any; next?: () => void }) => {
+          try {
+            resolve(resultCB(resolveCtx.reply));
+          } catch (e) {
+            reject(e);
+          } finally {
+            resolveCtx.next?.();
+          }
+        },
+        (rejectCtx: { error: any; next?: () => void }) => {
+          reject(rejectCtx.error);
+          rejectCtx.next?.();
+        }
+      );
+    });
+  }
+
+  private _dataReceived(data, transportId: number = this._transportId) {
+    let replies: any[];
+    try {
+      replies = this._codec.decodeReplies(data);
+    } catch (e) {
+      // Not Centrifugo data, e.g. an HTML page from a captive portal or a
+      // misconfigured proxy. Close the transport so the client reconnects,
+      // instead of throwing from the transport callback.
+      this._debug('error decoding received data', e);
+      // Tear the connection down at once, as the close callback of the transport
+      // would: the data read with this, e.g. the next lines of an http_stream chunk,
+      // must not be dispatched, and the close callback comes later, or never for a
+      // transport whose close() throws.
+      if (this._emulation && !this._transportWasOpen) {
+        this._advanceTransportIndex();
+      }
+      this._disconnect(connectingCodes.transportClosed, 'transport closed', true);
+      return;
+    }
+    // Only data from the server proves the connection alive: not e.g. blank keep-alive
+    // lines an intermediary writes.
+    if (this._serverPing > 0 && replies.length > 0) {
+      this._waitServerPing();
+    }
+    // We have to guarantee order of events in replies processing - i.e. start processing
+    // next reply only when we finished processing of current one. Without syncing things in
+    // this way we could get wrong publication events order as reply promises resolve
+    // on next loop tick so for loop continues before we finished emitting all reply events.
+    this._dispatchPromise = this._dispatchPromise.then(() => new Promise<void>(resolve => {
+      this._dispatchSynchronized(replies, resolve, transportId);
+    }));
+  }
+
+  private _dispatchSynchronized(replies: any[], finishDispatch: any, transportId: number) {
+    let p: Promise<unknown> = Promise.resolve();
+    for (const i in replies) {
+      if (replies.hasOwnProperty(i)) {
+        p = p.then(() => {
+          // The transport was closed or replaced while this frame waited or was
+          // being dispatched (e.g. disconnect() called from an event handler):
+          // its remaining replies are outdated.
+          if (this._transportId !== transportId) {
+            return;
+          }
+          return this._dispatchReply(replies[i]);
+        }).catch(err => {
+          // The exception stops the client, which skips the remaining replies. The
+          // chain still settles: frames of a later connection wait for this one.
+          this._dispatchFailed(err);
+        });
+      }
+    }
+    p.then(() => {
+      finishDispatch();
+    });
+  }
+
+  // An exception while handling a reply, e.g. thrown by an application event
+  // handler, may have left the application state inconsistent. The client stops
+  // in a state the application can see: it disconnects without reconnecting, so
+  // no later reply is processed.
+  private _dispatchFailed(err: any) {
+    this._reportDispatchError(err);
+    let message: string;
+    try {
+      message = err instanceof Error ? err.message : String(err);
+    } catch (e) {
+      // E.g. a thrown Object.create(null): it has no string form.
+      message = 'value without a string form';
+    }
+    try {
+      this._disconnect(disconnectedCodes.badProtocol, `exception during message handling: ${message}`, false);
+    } catch (e) {
+      // Thrown by a handler of the disconnect events.
+      this._reportDispatchError(e);
+    }
+  }
+
+  // The exception is surfaced as an unhandled rejection, as before.
+  private _reportDispatchError(err: any) {
+    this._debug('error dispatching reply', err);
+    Promise.reject(err);
+  }
+
+  // An exception while handling a rejected command. A rejection with next() carries
+  // a reply, and is handled as any reply (see _dispatchFailed). A timeout or a teardown
+  // doesn't: stopping the client would cancel the reconnect or retry the handling
+  // scheduled, so the exception is only reported.
+  private _rejectionFailed(err: any, rejectCtx: any) {
+    if (rejectCtx.next !== undefined) {
+      this._dispatchFailed(err);
+    } else {
+      this._reportDispatchError(err);
+    }
+  }
+
+  private _dispatchReply(reply: any) {
+    let next: any;
+    const p = new Promise(resolve => {
+      next = resolve;
+    });
+
+    if (reply === undefined || reply === null) {
+      this._debug('dispatch: got undefined or null reply');
+      next();
+      return p;
+    }
+
+    const id = reply.id;
+
+    if (id && id > 0) {
+      this._handleReply(reply, next);
+    } else {
+      if (!reply.push) {
+        this._handleServerPing(next);
+      } else {
+        this._handlePush(reply.push, next);
+      }
+    }
+
+    return p;
+  }
+
+  private _call(cmd: any, skipSending: boolean): Promise<CallResolveContext> {
+    return new Promise((resolve, reject) => {
+      cmd.id = this._nextCommandId();
+
+      this._registerCall(
+        cmd.id,
+        resolve as (value: CallResolveContext) => void,
+        reject as (reason: CallRejectContext) => void
+      );
+
+      if (!skipSending) {
+        this._addCommand(cmd);
+      }
+    });
+  }
+
+  private _startConnecting() {
+    this._debug('start connecting');
+    // The attempt starts also when a handler of the events throws (the exception
+    // propagates afterwards), or the client stays connecting with nothing scheduled,
+    // and connect() does nothing. So the number of the transition is taken before its
+    // state event.
+    const transition = this.state !== State.Connecting ? this._stateTransitions + 1 : 0;
+    try {
+      this._setState(State.Connecting);
+      // A 'state' handler may have called disconnect() already.
+      if (transition && !this._transitionSuperseded(transition)) {
+        this.emit('connecting', { code: connectingCodes.connectCalled, reason: 'connect called' });
+      }
+    } finally {
+      if (!this._transitionSuperseded(transition)) {
+        this._client = null;
+        this._startReconnecting();
+      }
+    }
+  }
+
+  private _disconnect(code: number, reason: string, reconnect: boolean) {
+    if (code === disconnectedCodes.stateInvalidated) {
+      // State invalidated: clear connection token (forcing a fresh one via
+      // getToken on reconnect) and invalidate all subscription state. Done here
+      // (the shared funnel) so it fires whether it arrives as a Disconnect push
+      // or as a raw WebSocket close code — and before _clearConnectedState below
+      // moves subscriptions to subscribing for the resubscribe. Runs ahead of the
+      // isDisconnected guard so the invalidation is unconditional.
+      // Without getToken there is no new token to get: keep the token the
+      // client has (or none) and reconnect with it. The server rejects it if
+      // it's no longer valid, instead of the client stopping on a local
+      // configuration error.
+      if (this._config.getToken !== null) {
+        this._token = '';
+        this._refreshRequired = true;
+      }
+      for (const channel in this._subs) {
+        if (this._subs.hasOwnProperty(channel)) {
+          // @ts-ignore – _invalidateState is internal.
+          this._subs[channel]._invalidateState();
+        }
+      }
+      // Server-side subscriptions carry their own cached recovery position,
+      // separate from the client-side subscriptions above — reset it to the
+      // same unrecoverable sentinel so the next connect can't recover from
+      // now-invalidated state. "_" is a sentinel, not an epoch the server can
+      // produce: the recovery of the next connect is meant to fail. It has to be
+      // non-empty — an empty epoch means "any epoch" to the server (see
+      // _invalidateState of a subscription).
+      for (const channel in this._serverSubs) {
+        if (this._serverSubs.hasOwnProperty(channel)) {
+          this._serverSubs[channel].offset = 0;
+          this._serverSubs[channel].epoch = '_';
+        }
+      }
+    }
+    if (this._isDisconnected()) {
+      if (!reconnect) {
+        // Calls made while disconnected wait for a connection: disconnect() ends
+        // that wait too.
+        this._rejectPromises({ code: errorCodes.clientDisconnected, message: 'disconnected' });
+      }
+      return;
+    }
+    const previousState = this.state;
+    const newState = reconnect ? State.Connecting : State.Disconnected;
+
+    // Tear everything down before emitting any event: handlers may call connect()
+    // or disconnect() synchronously, and nothing below must undo what they start.
+    this._transportIsOpen = false;
+    this._reconnecting = false;
+    if (previousState === State.Connecting) {
+      this._clearReconnectTimeout();
+    }
+    this._clearConnectTimeout();
+    // Invalidates callbacks of the transport closed below (SSE issues its close
+    // callback synchronously).
+    this._nextTransportId();
+    // Aborts token/data continuations of an attempt that had not created a
+    // transport yet.
+    this._disconnects++;
+    if (this._transport) {
+      this._debug("closing existing transport");
+      const transport = this._transport;
+      this._transport = null;
+      try {
+        transport.close();
+      } catch (e) {
+        // E.g. a transport whose socket constructor threw: the teardown must complete.
+        this._debug('error closing transport', e);
+      }
+      // Its close callback is ignored, so a new attempt must not wait for it.
+      this._transportClosed = true;
+    } else {
+      this._debug("no transport to close");
+    }
+    // A connection that ends before it proved usable keeps the backoff growing.
+    this._reconnectAttemptsResetPending = false;
+    // Commands collected for the closed transport must not go out on the next one.
+    this._commands = [];
+    this._clearOutgoingRequests();
+    if (!reconnect) {
+      this._rejectPromises({ code: errorCodes.clientDisconnected, message: 'disconnected' });
+      // Network listeners are removed with the state change below, so no online
+      // event can reset it.
+      this._deviceWentOffline = false;
+    }
+
+    const ctx = {
+      code: code,
+      reason: reason
+    };
+    // The rest runs also when a handler of the events throws (the exception
+    // propagates afterwards): subscriptions must move to subscribing and a reconnect
+    // must be scheduled, or the client is left stuck. So the number of the
+    // transition is taken before its state event.
+    const transition = this.state !== newState ? this._stateTransitions + 1 : 0;
+    try {
+      try {
+        this._setState(newState);
+      } finally {
+        if (!reconnect && !this._transitionSuperseded(transition)) {
+          // Client methods called from a 'state' handler must fail now too, not wait
+          // for a connection.
+          this._rejectPromises({ code: errorCodes.clientDisconnected, message: 'disconnected' });
+        }
+        if (previousState === State.Connected) {
+          this._clearConnectedState();
+        }
+      }
+      // A handler of the events above may have changed the state again: this
+      // transition is outdated then, and its event would arrive out of order.
+      if (transition && !this._transitionSuperseded(transition)) {
+        if (reconnect) {
+          this.emit('connecting', ctx);
+        } else {
+          this.emit('disconnected', ctx);
+        }
+      }
+    } finally {
+      // Unless a handler has already started a new attempt.
+      if (reconnect && !this._transitionSuperseded(transition)) {
+        this._scheduleReconnect();
+      }
+    }
+  }
+
+  private _failUnauthorized() {
+    this._disconnect(disconnectedCodes.unauthorized, 'unauthorized', false);
+  }
+
+  private _getToken(): Promise<string> {
+    this._debug('get connection token');
+    if (!this._config.getToken) {
+      try {
+        this.emit('error', {
+          type: 'configuration',
+          error: {
+            code: errorCodes.badConfiguration,
+            message: 'token expired but no getToken function set in the configuration'
+          }
+        });
+      } catch (e) {
+        // The attempt must fail as unauthorized all the same, not stay in progress.
+        this._reportDispatchError(e);
+      }
+      return Promise.reject(new UnauthorizedError(''));
+    }
+    // A callback throwing instead of returning a rejected promise fails the same way,
+    // not by throwing out of the attempt.
+    try {
+      return Promise.resolve(this._config.getToken({}));
+    } catch (e) {
+      return Promise.reject(e);
+    }
+  }
+
+  // See _getToken.
+  private _getData(): Promise<any> {
+    try {
+      return Promise.resolve(this._config.getData!());
+    } catch (e) {
+      return Promise.reject(e);
+    }
+  }
+
+  private _refresh() {
+    const clientId = this._client;
+    const self = this;
+    // See _startReconnecting.
+    let tokenResolved = false;
+    this._getToken().then(function (token) {
+      tokenResolved = true;
+      if (clientId !== self._client) {
+        return;
+      }
+      if (!token) {
+        self._failUnauthorized();
+        return;
+      }
+      self._token = token;
+      self._debug('connection token refreshed');
+
+      if (!self._isConnected()) {
+        return;
+      }
+
+      const cmd = {
+        refresh: { token: self._token }
+      };
+
+      self._call(cmd, false).then(resolveCtx => {
+        try {
+          self._refreshResponse(resolveCtx.reply.refresh);
+        } catch (err) {
+          self._dispatchFailed(err);
+        } finally {
+          if (resolveCtx.next) {
+            resolveCtx.next();
+          }
+        }
+      }, rejectCtx => {
+        try {
+          // A disconnect rejects the pending command too: nothing to retry then,
+          // the connection this refresh was for is gone.
+          if (clientId === self._client) {
+            self._refreshError(rejectCtx.error);
+          }
+        } catch (err) {
+          self._rejectionFailed(err, rejectCtx);
+        } finally {
+          if (rejectCtx.next) {
+            rejectCtx.next();
+          }
+        }
+      });
+    }).catch(function (e) {
+      if (clientId !== self._client || !self._isConnected()) {
+        if (tokenResolved) {
+          self._reportDispatchError(e);
+        }
+        return;
+      }
+      if (e instanceof UnauthorizedError) {
+        self._failUnauthorized();
+        return;
+      }
+      self._emitError({
+        type: 'refreshToken',
+        error: {
+          code: errorCodes.clientRefreshToken,
+          message: e !== undefined ? e.toString() : ''
+        }
+      }, () => {
+        self._refreshTimeout = setTimeout(() => self._refresh(), self._getRefreshRetryDelay());
+      });
+    });
+  }
+
+  private _refreshError(err: any) {
+    if (err.code < 100 || err.temporary === true) {
+      this._emitError({
+        type: 'refresh',
+        error: err
+      }, () => {
+        this._refreshTimeout = setTimeout(() => this._refresh(), this._getRefreshRetryDelay());
+      });
+    } else {
+      this._disconnect(err.code, err.message, false);
+    }
+  }
+
+  private _getRefreshRetryDelay() {
+    return backoff(0, 5000, 10000);
+  }
+
+  private _refreshResponse(result: any) {
+    if (this._refreshTimeout) {
+      clearTimeout(this._refreshTimeout);
+      this._refreshTimeout = null;
+    }
+    if (result.expires) {
+      // The client id of the connection only changes if the reply carries one — and
+      // Centrifugo never sets that field of a refresh reply. Taking an absent one
+      // leaves the client without an id, and the checks comparing against it stop
+      // recognising a token fetch, or a reply, of a connection that is gone.
+      if (result.client) {
+        this._client = result.client;
+      }
+      this._refreshTimeout = setTimeout(() => this._refresh(), ttlMilliseconds(result.ttl));
+    }
+  }
+
+  // A new subscription of the channel waits for the unsubscribe of a removed one, and
+  // of those removed before it still unsubscribing (see _setSubscribing of a
+  // subscription): a subscription removed without sending an unsubscribe doesn't
+  // drop one still pending.
+  private _recordRemovedUnsubscribe(sub: _BaseSubscription) {
+    const channel = sub.channel;
+    const previous = this._removedUnsubscribes[channel];
+    // @ts-ignore – we are hiding some symbols from public API autocompletion.
+    const own: Promise<void> = sub._unsubPromise;
+    const unsubscribed: Promise<void> = previous ? Promise.all([previous, own]).then(() => undefined) : own;
+    this._removedUnsubscribes[channel] = unsubscribed;
+    unsubscribed.then(() => {
+      if (this._removedUnsubscribes[channel] === unsubscribed) {
+        delete this._removedUnsubscribes[channel];
+      }
+    });
+  }
+
+  // Resolves once a subscription of the channel removed from the client has
+  // unsubscribed (see BaseSubscription._setSubscribing).
+  // @ts-ignore – this is used by a subscription in subscription.ts.
+  private _removedSubscriptionUnsubscribed(channel: string): Promise<void> {
+    return this._removedUnsubscribes[channel] || Promise.resolve();
+  }
+
+  protected _unsubscribe(sub: _BaseSubscription) {
+    if (!this._transportIsOpen) {
+      return Promise.resolve();
+    }
+    const req = {
+      channel: sub.channel
+    };
+    const cmd = { unsubscribe: req };
+
+    const self = this;
+    // A teardown rejects the pending command, and the rejection is processed after
+    // it: a newer attempt may have started by then, which must not be torn down.
+    const transportId = this._transportId;
+
+    const unsubscribePromise = new Promise<void>((resolve, _) => {
+      this._call(cmd, false).then(resolveCtx => {
+        resolve()
+        if (resolveCtx.next) {
+          resolveCtx.next();
+        }
+      }, rejectCtx => {
+        resolve()
+        if (rejectCtx.next) {
+          rejectCtx.next();
+        }
+        if (self._transportId !== transportId) {
+          self._debug('unsubscribe command of a closed transport rejected');
+          return;
+        }
+        try {
+          self._disconnect(connectingCodes.unsubscribeError, 'unsubscribe error', true);
+        } catch (err) {
+          self._rejectionFailed(err, rejectCtx);
+        }
+      });
+    });
+
+    return unsubscribePromise;
+  }
+
+  private _getSub(channel: string, id?: number) {
+    if (id && id > 0) {
+      for (const ch in this._subs) {
+        if (this._subs.hasOwnProperty(ch)) {
+          const sub = this._subs[ch];
+          // @ts-ignore – we are accessing private property for internal use
+          if (sub._id === id) {
+            return sub;
+          }
+        }
+      }
+      return null;
+    }
+    const sub = this._subs[channel];
+    if (!sub) {
+      return null;
+    }
+    return sub;
+  }
+
+  private _isServerSub(channel: string): boolean {
+    return this._serverSubs[channel] !== undefined;
+  }
+
+  // The client-side subscription a push is for. The server allows one subscription
+  // per channel: while a server-side subscription has the channel, its pushes
+  // belong to it unless the client-side subscription is subscribed, e.g. when the
+  // app kept an unsubscribed subscription object of that channel.
+  private _getSubForPush(channel: string, id?: number) {
+    const sub = this._getSub(channel, id);
+    // @ts-ignore – we are hiding some symbols from public API autocompletion.
+    if (sub && channel && this._isServerSub(channel) && !sub._isSubscribed()) {
+      return null;
+    }
+    return sub;
+  }
+
+  private _sendSubscribeCommands(): any[] {
+    const commands: any[] = [];
+    for (const channel in this._subs) {
+      if (!this._subs.hasOwnProperty(channel)) {
+        continue;
+      }
+      const sub = this._subs[channel];
+      // @ts-ignore – we are hiding some symbols from public API autocompletion.
+      if (sub._inflight === true) {
+        continue;
+      }
+      // A subscribe error is retried after its backoff, also across a reconnect.
+      // @ts-ignore – we are hiding some symbols from public API autocompletion.
+      if (sub._resubscribeTimeout !== null) {
+        continue;
+      }
+      if (sub.state === SubscriptionState.Subscribing) {
+        // @ts-ignore – we are hiding some symbols from public API autocompletion.
+        const cmd = sub._subscribe();
+        if (cmd) {
+          commands.push(cmd);
+        }
+      }
+    }
+    return commands;
+  }
+
+  private _connectResponse(result: any) {
+    this._transportIsOpen = true;
+    this._transportWasOpen = true;
+    if (this._transport !== null && this._transport.emulation()) {
+      // A connect reply over an emulation transport proves only the stream. Commands
+      // go through the emulation endpoint, which may keep failing and close the
+      // transport after every connect: reset the backoff once the server replied to
+      // a command or pinged, or such a client reconnects at the minimum delay forever.
+      this._reconnectAttemptsResetPending = true;
+    } else {
+      this._reconnectAttempts = 0;
+    }
+    this._refreshRequired = false;
+    // Connected again: a later online event must not take the device for having been
+    // offline and abort a transport that works.
+    this._deviceWentOffline = false;
+
+    if (this._isConnected()) {
+      return;
+    }
+
+    this._client = result.client;
+    const transition = this._setState(State.Connected);
+    // A 'state' handler may have called disconnect(), which already tore the
+    // connection down.
+    if (this._transitionSuperseded(transition)) {
+      return;
+    }
+
+    if (this._refreshTimeout) {
+      clearTimeout(this._refreshTimeout);
+    }
+    if (result.expires) {
+      this._refreshTimeout = setTimeout(() => this._refresh(), ttlMilliseconds(result.ttl));
+    }
+
+    this._session = result.session;
+    this._node = result.node;
+
+    this.startBatching();
+    this._sendSubscribeCommands();
+    this.stopBatching();
+
+    const ctx: any = {
+      client: result.client,
+      transport: this._transport.subName()
+    };
+    if (result.data) {
+      ctx.data = result.data;
+    }
+
+    this.emit('connected', ctx);
+    // Same for a 'connected' handler.
+    if (this._transitionSuperseded(transition)) {
+      return;
+    }
+
+    this._resolvePromises();
+
+    this._processServerSubs(result.subs || {}, transition);
+
+    if (result.ping && result.ping > 0) {
+      this._serverPing = result.ping * 1000;
+      this._sendPong = result.pong === true;
+      this._waitServerPing();
+    } else {
+      this._serverPing = 0;
+    }
+  }
+
+  private _processServerSubs(subs: Record<string, any>, transition: number) {
+    // A 'subscribed' or 'publication' handler may call disconnect(). Removed
+    // channels are still reported, but no more subscribed or publication events
+    // of this connection are emitted, and no more positions stored: a position
+    // whose subscribed event the app didn't get would hide a gap from it (the
+    // next connect recovering from a position after it, recovered=true).
+    for (const channel in subs) {
+      if (!subs.hasOwnProperty(channel)) {
+        continue;
+      }
+      if (this._transitionSuperseded(transition)) {
+        continue;
+      }
+      const sub = subs[channel];
+      this._serverSubs[channel] = {
+        'offset': toOffset(sub.offset),
+        'epoch': sub.epoch,
+        'recoverable': sub.recoverable || false,
+        'subscribed': true
+      };
+      const subCtx = this._getSubscribeContext(channel, sub);
+      this.emit('subscribed', subCtx);
+    }
+
+    for (const channel in subs) {
+      if (!subs.hasOwnProperty(channel)) {
+        continue;
+      }
+      const sub = subs[channel];
+      if (sub.recovered) {
+        const pubs = sub.publications || [];
+        for (let i = 0; i < pubs.length && !this._transitionSuperseded(transition); i++) {
+          this._handlePublication(channel, pubs[i]);
+        }
+      }
+    }
+
+    for (const channel in this._serverSubs) {
+      if (!this._serverSubs.hasOwnProperty(channel)) {
+        continue;
+      }
+      if (!subs[channel]) {
+        this.emit('unsubscribed', { channel: channel });
+        delete this._serverSubs[channel];
+      }
+    }
+  }
+
+  private _clearRefreshTimeout() {
+    if (this._refreshTimeout !== null) {
+      clearTimeout(this._refreshTimeout);
+      this._refreshTimeout = null;
+    }
+  }
+
+  private _clearReconnectTimeout() {
+    if (this._reconnectTimeout !== null) {
+      clearTimeout(this._reconnectTimeout);
+      this._reconnectTimeout = null;
+    }
+  }
+
+  private _clearConnectTimeout() {
+    if (this._connectTimeout !== null) {
+      clearTimeout(this._connectTimeout);
+      this._connectTimeout = null;
+    }
+  }
+
+  private _clearServerPingTimeout() {
+    if (this._serverPingTimeout !== null) {
+      clearTimeout(this._serverPingTimeout);
+      this._serverPingTimeout = null;
+    }
+  }
+
+  private _waitServerPing() {
+    if (this._config.maxServerPingDelay === 0) {
+      return;
+    }
+    if (!this._isConnected()) {
+      return;
+    }
+    this._clearServerPingTimeout();
+    const delay = this._serverPing + this._config.maxServerPingDelay;
+    const due = Date.now() + delay;
+    this._serverPingTimeout = setTimeout(() => {
+      if (!this._isConnected()) {
+        return;
+      }
+      // A ping may have been received already but not processed yet, e.g. when a
+      // suspended process resumes: let that data be processed first, as for a call
+      // (see _registerCall). Any data received re-arms this timer.
+      const late = Date.now() - due >= lateCallTimer;
+      this._serverPingTimeout = setTimeout(() => {
+        if (!this._isConnected()) {
+          return;
+        }
+        this._disconnect(connectingCodes.noPing, 'no ping', true);
+      }, late ? lateCallGrace : 0);
+    }, delay);
+  }
+
+  private _getSubscribeContext(channel: string, result: any): SubscribedContext {
+    const ctx: any = {
+      channel: channel,
+      positioned: false,
+      recoverable: false,
+      wasRecovering: false,
+      recovered: false,
+      hasRecoveredPublications: false,
+    };
+    if (result.recovered) {
+      ctx.recovered = true;
+    }
+    if (result.positioned) {
+      ctx.positioned = true;
+    }
+    if (result.recoverable) {
+      ctx.recoverable = true;
+    }
+    if (result.was_recovering) {
+      ctx.wasRecovering = true;
+    }
+    let epoch = '';
+    if ('epoch' in result) {
+      epoch = result.epoch;
+    }
+    let offset = 0;
+    if ('offset' in result) {
+      offset = toOffset(result.offset);
+    }
+    if (ctx.positioned || ctx.recoverable) {
+      ctx.streamPosition = {
+        'offset': offset,
+        'epoch': epoch
+      };
+    }
+    if (Array.isArray(result.publications) && result.publications.length > 0) {
+      ctx.hasRecoveredPublications = true;
+    }
+    if (result.data) {
+      ctx.data = result.data;
+    }
+    return ctx;
+  }
+
+  private _handleReply(reply: any, next: any) {
+    this._resetReconnectAttemptsIfPending();
+    const id = reply.id;
+    if (!(id in this._callbacks)) {
+      next();
+      return;
+    }
+    const callbacks = this._callbacks[id];
+    clearTimeout(this._callbacks[id].timeout);
+    delete this._callbacks[id];
+
+    if (!errorExists(reply)) {
+      const callback = callbacks.callback;
+      if (!callback) {
+        return;
+      }
+      callback({ reply, next });
+    } else {
+      const errback = callbacks.errback;
+      if (!errback) {
+        next();
+        return;
+      }
+      const error = {code: reply.error.code, message: reply.error.message || '', temporary: reply.error.temporary || false};
+      errback({ error, next });
+    }
+  }
+
+  private _handleJoin(channel: string, join: any, id?: number) {
+    const sub = this._getSubForPush(channel, id);
+    if (!sub) {
+      // See _handlePublication: a compacted push with an unknown id has an empty
+      // channel and no matching subscription — drop instead of crashing.
+      if (channel && this._isServerSub(channel)) {
+        const ctx = { channel: channel, info: this._getJoinLeaveContext(join.info) };
+        this.emit('join', ctx);
+      }
+      return;
+    }
+    // @ts-ignore – we are hiding some symbols from public API autocompletion.
+    if (!sub._isSubscribed()) {
+      this._debug('join for a subscription that is not subscribed', channel);
+      return;
+    }
+    // @ts-ignore – we are hiding some symbols from public API autocompletion.
+    sub._handleJoin(join);
+  }
+
+  private _handleLeave(channel: string, leave: any, id?: number) {
+    const sub = this._getSubForPush(channel, id);
+    if (!sub) {
+      // See _handlePublication: a compacted push with an unknown id has an empty
+      // channel and no matching subscription — drop instead of crashing.
+      if (channel && this._isServerSub(channel)) {
+        const ctx = { channel: channel, info: this._getJoinLeaveContext(leave.info) };
+        this.emit('leave', ctx);
+      }
+      return;
+    }
+    // @ts-ignore – we are hiding some symbols from public API autocompletion.
+    if (!sub._isSubscribed()) {
+      this._debug('leave for a subscription that is not subscribed', channel);
+      return;
+    }
+    // @ts-ignore – we are hiding some symbols from public API autocompletion.
+    sub._handleLeave(leave);
+  }
+
+  private _handleUnsubscribe(channel: string, unsubscribe: any) {
+    const sub = this._getSubForPush(channel, 0);
+    if (!sub) {
+      if (channel && this._isServerSub(channel)) {
+        delete this._serverSubs[channel];
+        this.emit('unsubscribed', { channel: channel });
+      }
+      return;
+    }
+    // @ts-ignore – we are hiding some symbols from public API autocompletion.
+    if (!sub._isSubscribed()) {
+      // It ends a previous subscription: one the app unsubscribed, or one that raced
+      // unsubscribe() and subscribe() of the app. The server unsubscribes a
+      // subscription in progress only after replying to its subscribe, and it sends
+      // the push also when the subscription is already gone. A resubscribe code must
+      // not subscribe again, nor invalidate the state of a subscribe in progress.
+      this._debug('unsubscribe push for a previous subscription', channel);
+      return;
+    }
+    if (unsubscribe.code < 2500) {
+      // @ts-ignore – we are hiding some symbols from public API autocompletion.
+      sub._setUnsubscribed(unsubscribe.code, unsubscribe.reason, false);
+    } else {
+      if (unsubscribe.code === unsubscribedCodes.stateInvalidated) {
+        // State invalidated: clear subscription token and cached state so the
+        // resubscribe gets a fresh token and re-syncs.
+        // @ts-ignore – _invalidateState is internal.
+        sub._invalidateState();
+      }
+      // @ts-ignore – we are hiding some symbols from public API autocompletion.
+      sub._setSubscribing(unsubscribe.code, unsubscribe.reason);
+    }
+  }
+
+  private _handleSubscribe(channel: string, sub: any) {
+    this._serverSubs[channel] = {
+      'offset': toOffset(sub.offset),
+      'epoch': sub.epoch,
+      'recoverable': sub.recoverable || false,
+      'subscribed': true
+    };
+    this.emit('subscribed', this._getSubscribeContext(channel, sub));
+  }
+
+  private _handleDisconnect(disconnect: any) {
+    // The server pushed it over the transport, so the transport works: reconnect
+    // after the reconnect delay, as after a close code from the server, not at once
+    // with the next transport as for one that failed to open. An emulation transport
+    // is otherwise marked open only by a connect reply.
+    this._transportWasOpen = true;
+    const code = disconnect.code;
+    let reconnect = true;
+    if ((code >= 3500 && code < 4000) || (code >= 4500 && code < 5000)) {
+      reconnect = false;
+    }
+    // State invalidation (code 3014) is handled centrally in _disconnect so it
+    // covers both delivery paths: a Disconnect push (this method) and a raw
+    // WebSocket close code (transport onClose → _disconnect directly).
+    this._disconnect(code, disconnect.reason, reconnect);
+  }
+
+  private _getPublicationContext(channel: string, pub: any) {
+    const ctx: any = {
+      channel: channel,
+      data: pub.data
+    };
+    if (hasOffset(pub.offset)) {
+      ctx.offset = toOffset(pub.offset);
+    }
+    if (pub.info) {
+      ctx.info = this._getJoinLeaveContext(pub.info);
+    }
+    if (pub.tags) {
+      ctx.tags = pub.tags;
+    }
+    return ctx;
+  }
+
+  private _getJoinLeaveContext(clientInfo: any) {
+    const info: any = {
+      client: clientInfo.client,
+      user: clientInfo.user
+    };
+    const connInfo = clientInfo['conn_info'];
+    if (connInfo) {
+      info.connInfo = connInfo;
+    }
+    const chanInfo = clientInfo['chan_info'];
+    if (chanInfo) {
+      info.chanInfo = chanInfo;
+    }
+    return info;
+  }
+
+  private _handlePublication(channel: string, pub: any, id?: number) {
+    const sub = this._getSubForPush(channel, id);
+    if (!sub) {
+      // No client-side subscription. With channel compaction the push carries a
+      // numeric id and no channel, so an unknown id (e.g. a publication for a
+      // subscription already unsubscribed) has an empty channel here — it must
+      // be dropped, not fall through to sub._handlePublication on null.
+      if (channel && this._isServerSub(channel)) {
+        const ctx = this._getPublicationContext(channel, pub);
+        // The position moves after the app has the publication, so the position it can
+        // observe never runs ahead of what it received (see
+        // BaseSubscription._handlePublication). A connect command built while a handler
+        // runs takes the offset of the publication being dispatched (see the subs of
+        // _constructConnectCommand), so a connect() from that handler still recovers
+        // after it instead of receiving it again.
+        this._pendingServerSubOffsets[channel] = hasOffset(pub.offset) ? toOffset(pub.offset) : null;
+        try {
+          this.emit('publication', ctx);
+        } finally {
+          delete this._pendingServerSubOffsets[channel];
+        }
+        if (hasOffset(pub.offset)) {
+          this._serverSubs[channel].offset = toOffset(pub.offset);
+        }
+        // The epoch of a channel that had no stream at subscribe time comes with
+        // its first publication (see BaseSubscription._setPublicationPosition).
+        if (pub.epoch) {
+          this._serverSubs[channel].epoch = pub.epoch;
+        }
+      }
+      return;
+    }
+    // @ts-ignore – we are hiding some symbols from public API autocompletion.
+    if (!sub._isSubscribed()) {
+      // E.g. a publication already on its way when the app called unsubscribe().
+      this._debug('publication for a subscription that is not subscribed', channel);
+      return;
+    }
+    // @ts-ignore – we are hiding some symbols from public API autocompletion.
+    sub._handlePublication(pub);
+  }
+
+  private _handleMessage(message: any) {
+    this.emit('message', { data: message.data });
+  }
+
+  private _handleServerPing(next: any) {
+    this._resetReconnectAttemptsIfPending();
+    if (this._sendPong) {
+      const cmd = {};
+      this._transportSendCommands([cmd]);
+    }
+    next();
+  }
+
+  private _handlePush(data: any, next: any) {
+    const channel = data.channel;
+    const id = data.id;
+    if (data.pub) {
+      this._handlePublication(channel, data.pub, id);
+    } else if (data.message) {
+      this._handleMessage(data.message);
+    } else if (data.join) {
+      this._handleJoin(channel, data.join, id);
+    } else if (data.leave) {
+      this._handleLeave(channel, data.leave, id);
+    } else if (data.unsubscribe) {
+      this._handleUnsubscribe(channel, data.unsubscribe);
+    } else if (data.subscribe) {
+      this._handleSubscribe(channel, data.subscribe);
+    } else if (data.disconnect) {
+      this._handleDisconnect(data.disconnect);
+    }
+    next();
+  }
+
+  private _flush() {
+    const commands = this._commands.slice(0);
+    this._commands = [];
+    this._transportSendCommands(commands);
+  }
+
+  private _createErrorObject(code: number, message: string, temporary?: boolean) {
+    const errObject: any = {
+      code: code,
+      message: message
+    };
+    if (temporary) {
+      errObject.temporary = true;
+    }
+    return errObject;
+  }
+
+  private _registerCall(id: number, callback: any, errback: any) {
+    this._callbacks[id] = {
+      callback: callback,
+      errback: errback,
+      timeout: null
+    };
+    const due = Date.now() + this._config.timeout;
+    this._callbacks[id].timeout = setTimeout(() => {
+      // The reply may have been received already but not processed yet, e.g. when
+      // a suspended process resumes and this overdue timer runs before the data
+      // waiting in the socket. Let that data be processed first: one event loop
+      // turn is enough in Node. A timer running far too late means the process was
+      // suspended or blocked, and browsers don't promise to run the socket events
+      // before it: the reply gets a grace period then.
+      const late = Date.now() - due >= lateCallTimer;
+      this._callbacks[id].timeout = setTimeout(() => {
+        delete this._callbacks[id];
+        if (isFunction(errback)) {
+          errback({ error: this._createErrorObject(errorCodes.timeout, 'timeout') });
+        }
+      }, late ? lateCallGrace : 0);
+    }, this._config.timeout);
+  }
+
+  private _addCommand(command: any) {
+    if (this._batching) {
+      this._commands.push(command);
+    } else {
+      this._transportSendCommands([command]);
+    }
+  }
+
+  private _nextPromiseId() {
+    return ++this._promiseId;
+  }
+
+  private _nextTransportId() {
+    return ++this._transportId;
+  }
+
+  private _resolvePromises() {
+    for (const id in this._promises) {
+      if (!this._promises.hasOwnProperty(id)) {
+        continue;
+      }
+      if (this._promises[id].timeout) {
+        clearTimeout(this._promises[id].timeout);
+      }
+      this._promises[id].resolve();
+      delete this._promises[id];
+    }
+  }
+
+  private _rejectPromises(err: any) {
+    for (const id in this._promises) {
+      if (!this._promises.hasOwnProperty(id)) {
+        continue;
+      }
+      if (this._promises[id].timeout) {
+        clearTimeout(this._promises[id].timeout);
+      }
+      this._promises[id].reject(err);
+      delete this._promises[id];
+    }
+  }
+}
+
+Centrifuge.SubscriptionState = SubscriptionState;
+Centrifuge.State = State
+Centrifuge.UnauthorizedError = UnauthorizedError;

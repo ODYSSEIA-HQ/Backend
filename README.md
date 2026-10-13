@@ -40,7 +40,9 @@ odysseia/
 ├── tsconfig.json             # JSDoc 类型检查（tsc --checkJs，零构建链；.tscheck/ 本地工具链不入库）
 ├── .env.example              # 全部密钥清单（含生成命令注释）
 ├── caddy/Caddyfile           # 路由表；/bff/centrifugo/* 故意不出公网（防越权 oracle）
+│   └── upstream/caddy/       #   Caddy 源码 vendor（master @ 7328273，缝合件基线）
 ├── centrifugo/config.json    # 四 namespace + subscribe proxy（static_headers 注共享密钥）
+│   └── upstream/centrifugo/  #   Centrifugo 源码 vendor（v6.9.7 @ a2e0896，缝合件基线）
 ├── nodebb/Dockerfile         # 官方 NodeBB 4 + 两个自研插件
 ├── nodebb/upstream/NodeBB/   # NodeBB 本体源码（vendor 基线：上游 v4.16.2 @ 18f2a2ee）
 │                             # 独立项目：改核心直接在此改（注意与构建镜像 ghcr.io/nodebb/nodebb:4.x 的差异同步）
@@ -49,6 +51,7 @@ odysseia/
 │   ├── src/main.rs          # 五端点：/token、/centrifugo/subscribe、/upload/presign、/chat/:roomId/messages、/vendor/centrifuge.js
 │   ├── Dockerfile           # multi-stage 构建，产物 ~15MB
 │   ├── vendor/centrifuge.js # SDK 静态托管（构建期 COPY，替代 node_modules）
+│   ├── upstream/             #   centrifuge-js（master @ e69b1d8）+ meilisearch-js（v0.44.0）SDK 源码 vendor
 │   └── server.js            # 旧 Node 版（契约参考实现，已被 Rust 版替代）
 ├── monitoring/              # 可观测性（全内网）
 │   ├── prometheus.yml        # 抓取配置：centrifugo/meili/mongo/redis/cadvisor/nodebb

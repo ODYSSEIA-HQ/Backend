@@ -1,0 +1,230 @@
+package maphandler
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/caddyserver/caddy/v2"
+	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+)
+
+func TestValidateDuplicateInputs(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		first   Mapping
+		second  Mapping
+		wantErr bool
+	}{
+		{name: "duplicate literals", first: Mapping{Input: "/abc"}, second: Mapping{Input: "/abc"}, wantErr: true},
+		{name: "duplicate regexps", first: Mapping{InputRegexp: "/abc"}, second: Mapping{InputRegexp: "/abc"}, wantErr: true},
+		{name: "literal then regexp", first: Mapping{Input: "/abc"}, second: Mapping{InputRegexp: "/abc"}},
+		{name: "regexp then literal", first: Mapping{InputRegexp: "/abc"}, second: Mapping{Input: "/abc"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.first.Outputs = []any{"first"}
+			tc.second.Outputs = []any{"second"}
+			h := Handler{
+				Destinations: []string{"{output}"},
+				Mappings:     []Mapping{tc.first, tc.second},
+			}
+			err := h.Validate()
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "duplicate input '/abc'") {
+					t.Fatalf("expected duplicate input error, got %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("unexpected validation error: %v", err)
+			}
+		})
+	}
+}
+
+func TestProvisionDestinations(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		destination string
+		want        string
+		wantErr     bool
+	}{
+		{name: "valid placeholder", destination: "{output}", want: "output"},
+		{name: "trailing text", destination: "{output}suffix", wantErr: true},
+		{name: "leading text", destination: "prefix{output}", wantErr: true},
+		{name: "missing opening brace", destination: "output}", wantErr: true},
+		{name: "missing closing brace", destination: "{output", wantErr: true},
+		{name: "double closing brace", destination: "{output}}", wantErr: true},
+		{name: "double opening brace", destination: "{{output}", wantErr: true},
+		{name: "nested braces", destination: "{out{put}}", wantErr: true},
+		{name: "empty braces", destination: "{}", wantErr: true},
+		{name: "no braces", destination: "output", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := Handler{
+				Source:       "{http.request.uri.path}",
+				Destinations: []string{tc.destination},
+				Mappings: []Mapping{
+					{
+						Input:   "/foo",
+						Outputs: []any{"FOO"},
+					},
+				},
+			}
+			err := h.Provision(caddy.Context{})
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for destination %q, but got none (stored %q)", tc.destination, h.Destinations[0])
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error for destination %q: %v", tc.destination, err)
+			}
+			if h.Destinations[0] != tc.want {
+				t.Fatalf("expected destination %q, got %q", tc.want, h.Destinations[0])
+			}
+		})
+	}
+}
+
+func TestHandler(t *testing.T) {
+	for i, tc := range []struct {
+		handler Handler
+		reqURI  string
+		expect  map[string]any
+	}{
+		{
+			reqURI: "/foo",
+			handler: Handler{
+				Source:       "{http.request.uri.path}",
+				Destinations: []string{"{output}"},
+				Mappings: []Mapping{
+					{
+						Input:   "/foo",
+						Outputs: []any{"FOO"},
+					},
+				},
+			},
+			expect: map[string]any{
+				"output": "FOO",
+			},
+		},
+		{
+			reqURI: "/abcdef",
+			handler: Handler{
+				Source:       "{http.request.uri.path}",
+				Destinations: []string{"{output}"},
+				Mappings: []Mapping{
+					{
+						InputRegexp: "(/abc)",
+						Outputs:     []any{"ABC"},
+					},
+				},
+			},
+			expect: map[string]any{
+				"output": "ABC",
+			},
+		},
+		{
+			reqURI: "/ABCxyzDEF",
+			handler: Handler{
+				Source:       "{http.request.uri.path}",
+				Destinations: []string{"{output}"},
+				Mappings: []Mapping{
+					{
+						InputRegexp: "(xyz)",
+						Outputs:     []any{"...${1}..."},
+					},
+				},
+			},
+			expect: map[string]any{
+				"output": "...xyz...",
+			},
+		},
+		{
+			// Test case from https://caddy.community/t/map-directive-and-regular-expressions/13866/14?u=matt
+			reqURI: "/?s=0%27+AND+%28SELECT+0+FROM+%28SELECT+count%28%2A%29%2C+CONCAT%28%28SELECT+%40%40version%29%2C+0x23%2C+FLOOR%28RAND%280%29%2A2%29%29+AS+x+FROM+information_schema.columns+GROUP+BY+x%29+y%29+-+-+%27",
+			handler: Handler{
+				Source:       "{http.request.uri}",
+				Destinations: []string{"{output}"},
+				Mappings: []Mapping{
+					{
+						InputRegexp: "(?i)(\\^|`|<|>|%|\\\\|\\{|\\}|\\|)",
+						Outputs:     []any{"3"},
+					},
+				},
+			},
+			expect: map[string]any{
+				"output": "3",
+			},
+		},
+		{
+			reqURI: "/foo",
+			handler: Handler{
+				Source:       "{http.request.uri.path}",
+				Destinations: []string{"{output}"},
+				Mappings: []Mapping{
+					{
+						Input:   "/foo",
+						Outputs: []any{"{testvar}"},
+					},
+				},
+			},
+			expect: map[string]any{
+				"output": "testing",
+			},
+		},
+		{
+			reqURI: "/foo",
+			handler: Handler{
+				Source:       "{http.request.uri.path}",
+				Destinations: []string{"{output}"},
+				Defaults:     []string{"default"},
+			},
+			expect: map[string]any{
+				"output": "default",
+			},
+		},
+		{
+			reqURI: "/foo",
+			handler: Handler{
+				Source:       "{http.request.uri.path}",
+				Destinations: []string{"{output}"},
+				Defaults:     []string{"{testvar}"},
+			},
+			expect: map[string]any{
+				"output": "testing",
+			},
+		},
+	} {
+		if err := tc.handler.Provision(caddy.Context{}); err != nil {
+			t.Fatalf("Test %d: Provisioning handler: %v", i, err)
+		}
+
+		req, err := http.NewRequest(http.MethodGet, tc.reqURI, nil)
+		if err != nil {
+			t.Fatalf("Test %d: Creating request: %v", i, err)
+		}
+		repl := caddyhttp.NewTestReplacer(req)
+		repl.Set("testvar", "testing")
+		ctx := context.WithValue(req.Context(), caddy.ReplacerCtxKey, repl)
+		req = req.WithContext(ctx)
+
+		rr := httptest.NewRecorder()
+		noop := caddyhttp.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) error { return nil })
+
+		if err := tc.handler.ServeHTTP(rr, req, noop); err != nil {
+			t.Errorf("Test %d: Handler returned error: %v", i, err)
+			continue
+		}
+
+		for key, expected := range tc.expect {
+			actual, _ := repl.Get(key)
+			if !reflect.DeepEqual(actual, expected) {
+				t.Errorf("Test %d: Expected %#v but got %#v for {%s}", i, expected, actual, key)
+			}
+		}
+	}
+}

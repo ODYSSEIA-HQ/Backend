@@ -1,0 +1,148 @@
+import { LineStreamBuffer, ReplyStreamBuffer } from './stream_buffer';
+
+/** @internal */
+export class WebtransportTransport {
+  private _transport: any;
+  private _stream: any;
+  private _writer: any;
+  private endpoint: string;
+  private options: any;
+  _protocol: string;
+
+  constructor(endpoint: string, options: any) {
+    this.endpoint = endpoint;
+    this.options = options;
+    this._transport = null;
+    this._stream = null;
+    this._writer = null;
+    this._protocol = 'json';
+  }
+
+  name() {
+    return 'webtransport';
+  }
+
+  subName() {
+    return 'webtransport';
+  }
+
+  emulation() {
+    return false;
+  }
+
+  supported() {
+    return this.options.webtransport !== undefined && this.options.webtransport !== null;
+  }
+
+  async initialize(protocol: string, callbacks: any) {
+    let url: any;
+    if (globalThis && globalThis.document && globalThis.document.baseURI) {
+      // Handle case when endpoint is relative, like //example.com/connection/webtransport
+      url = new URL(this.endpoint, globalThis.document.baseURI);
+    } else {
+      url = new URL(this.endpoint);
+    }
+    if (protocol === 'protobuf') {
+      url.searchParams.append('cf_protocol', 'protobuf');
+    }
+
+    this._protocol = protocol;
+    const eventTarget = new EventTarget();
+
+    this._transport = new this.options.webtransport(url.toString());
+    this._transport.closed.then(() => {
+      callbacks.onClose({
+        code: 4,
+        reason: 'connection closed'
+      });
+    }).catch(() => {
+      callbacks.onClose({
+        code: 4,
+        reason: 'connection closed'
+      });
+    });
+    try {
+      await this._transport.ready;
+    } catch {
+      this.close();
+      return;
+    }
+    let stream: any;
+    try {
+      stream = await this._transport.createBidirectionalStream();
+    } catch {
+      this.close();
+      return;
+    }
+    this._stream = stream;
+    this._writer = this._stream.writable.getWriter();
+
+    eventTarget.addEventListener('close', () => {
+      callbacks.onClose({
+        code: 4,
+        reason: 'connection closed'
+      });
+    });
+
+    eventTarget.addEventListener('message', (e: any) => {
+      callbacks.onMessage(e.data);
+    });
+
+    this._startReading(eventTarget);
+
+    callbacks.onOpen();
+  }
+
+  async _startReading(eventTarget: any) {
+    const reader = this._stream.readable.getReader();
+    const jsonStreamBuf = new LineStreamBuffer();
+    const protoStreamBuf = new ReplyStreamBuffer();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (value && value.length > 0) {
+          if (this._protocol === 'json') {
+            jsonStreamBuf.push(value, line => eventTarget.dispatchEvent(new MessageEvent('message', { data: line })));
+          } else {
+            protoStreamBuf.push(value);
+            protoStreamBuf.drain(
+              data => this.options.decoder.decodeReply(data),
+              reply => eventTarget.dispatchEvent(new MessageEvent('message', { data: reply })),
+            );
+          }
+        }
+        if (done) {
+          break;
+        }
+      }
+    } catch {
+      eventTarget.dispatchEvent(new Event('close'));
+    }
+  }
+
+  async close() {
+    try {
+      if (this._writer) {
+        await this._writer.close();
+      }
+      this._transport.close();
+    } catch (e) {
+      // already closed.
+    }
+  }
+
+  async send(data: any) {
+    let binary: Uint8Array;
+    if (this._protocol === 'json') {
+      // Need extra \n since WT is non-frame protocol. 
+      binary = new TextEncoder().encode(data + '\n');
+    } else {
+      binary = data;
+    }
+    try {
+      await this._writer.write(binary);
+    } catch (e) {
+      this.close();
+    }
+  }
+}

@@ -1,0 +1,390 @@
+// Package pgschema contains the shared schema-versioning primitives used by
+// every PostgreSQL-backed broker / controller in this project. Each consumer
+// stores its own integer schemaVersion plus a map[int]string of upgrade
+// migrations and wires them together in its own EnsureSchema; the safety
+// invariants (gap-free migrations, error-discriminated reads, transactional
+// upgrades, downgrade rejection) all live here so they can't drift apart.
+package pgschema
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"hash/fnv"
+	"math/rand/v2"
+	"time"
+	"unicode"
+
+	"github.com/jackc/pgerrcode"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// querier is the minimal subset of *pgxpool.Pool / pgx.Tx that the
+// schema-management helpers need. Accepting an interface keeps the package
+// free of a hard pgxpool dependency and makes it usable from inside an
+// outer transaction (e.g. a test fixture that wraps everything in a txn).
+type querier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// txBeginner is what ApplyMigrationInTx needs from the connection source —
+// the ability to start a new transaction. Pools satisfy this directly.
+type txBeginner interface {
+	BeginTx(ctx context.Context, txOptions pgx.TxOptions) (pgx.Tx, error)
+}
+
+// ValidateMigrationMap panics if migrations doesn't contain exactly one entry
+// for every version in [2..target] (with nothing outside that range). Call
+// this from a package-level init() in every broker that ships migrations.
+//
+// Rationale: bumping schemaVersion without registering the matching migration
+// would silently skip it for existing installs — schema_version would jump
+// forward via the final UPDATE while the DB shape stays at the old version.
+// Panic at process start rather than corrupt at runtime.
+func ValidateMigrationMap(label string, target int, migrations map[int]string) {
+	for v := 2; v <= target; v++ {
+		if _, ok := migrations[v]; !ok {
+			panic(fmt.Sprintf("%s: missing schemaMigrations[%d] (schemaVersion=%d) — every version 2..schemaVersion must have a migration registered", label, v, target))
+		}
+	}
+	for v := range migrations {
+		if v < 2 || v > target {
+			panic(fmt.Sprintf("%s: schemaMigrations[%d] is outside the valid range [2..%d]", label, v, target))
+		}
+	}
+}
+
+// ValidateTablePrefix rejects a configured table prefix that can never work as
+// a PostgreSQL identifier. Every table, index and function name is this prefix
+// concatenated with a fixed suffix and interpolated into DDL unquoted, so a bad
+// prefix surfaces as a syntax error deep inside a generated CREATE statement,
+// naming the table it failed to create rather than the setting that produced
+// it. Call it once at construction, after defaults are applied.
+//
+// The rule is PostgreSQL's own for unquoted identifiers, so it rejects only
+// what could never have worked: a letter or underscore first, then letters,
+// digits, underscores or dollar signs. Uppercase stays valid — PostgreSQL
+// folds it, so a prefix of "MyApp" yields myapp_* tables and every generated
+// query folds to match — and so do non-ASCII letters.
+//
+// It deliberately says nothing about length. PostgreSQL truncates identifiers
+// at 63 bytes rather than erroring, so a long prefix degrades (partition names
+// losing their date suffix, for one) instead of failing outright, and rejecting
+// it here would refuse deployments that are running today.
+func ValidateTablePrefix(label, prefix string) error {
+	if prefix == "" {
+		return fmt.Errorf("%s: table_prefix is empty", label)
+	}
+	for i, r := range prefix {
+		switch {
+		case unicode.IsLetter(r) || r == '_':
+			// Valid anywhere, including first.
+		case (unicode.IsDigit(r) || r == '$') && i > 0:
+			// Valid only after the first character.
+		default:
+			return fmt.Errorf(
+				"%s: table_prefix %q contains %q, which PostgreSQL does not accept in an unquoted identifier — use letters, digits and underscores, and don't start with a digit",
+				label, prefix, r)
+		}
+	}
+	return nil
+}
+
+// ReadSchemaVersion reads the schema_version row from `table` and discriminates
+// the error class. Returns:
+//
+//   - (version, false, nil) if the row was read successfully
+//   - (0, true, nil)        if the table is missing (Postgres 42P01) or the
+//     row is missing (pgx.ErrNoRows). The caller should run the fresh-install
+//     path: DDL creates everything at the latest baseline, then SetSchemaVersion
+//     bumps from 1 to the current schemaVersion.
+//   - (0, false, err)       for any other error (transient connection failure,
+//     permission denied, timeout, column missing, …). The caller MUST propagate.
+//
+// Why: collapsing every error into "treat as fresh" lets a transient SELECT
+// failure silently bypass migrations and force schema_version forward via the
+// final UPDATE — leaving the DB at the old shape while the row claims the new
+// version (silent corruption).
+func ReadSchemaVersion(ctx context.Context, q querier, table string) (int, bool, error) {
+	var v int
+	err := q.QueryRow(ctx, fmt.Sprintf(`SELECT schema_version FROM %s WHERE id = 1`, table)).Scan(&v)
+	if err == nil {
+		return v, false, nil
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, true, nil
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == pgerrcode.UndefinedTable {
+		return 0, true, nil
+	}
+	return 0, false, fmt.Errorf("read schema_version from %s: %w", table, err)
+}
+
+// CheckDowngrade returns a clear error when the DB has been touched by a
+// newer binary than this one. Silently rewriting schema_version backward (the
+// pre-pgschema behaviour) would leave the DB structurally newer than the
+// running code expects.
+func CheckDowngrade(label string, dbVersion, supportedVersion int) error {
+	if dbVersion > supportedVersion {
+		return fmt.Errorf("%s: DB schema_version is %d but this binary supports only up to %d — downgrade not supported, run a binary >= %d or restore an older DB snapshot", label, dbVersion, supportedVersion, dbVersion)
+	}
+	return nil
+}
+
+// MigrationVariant pairs a fully-rendered migration SQL with the version
+// tracking table it should bump. ApplyMigrationInTx runs every variant in
+// the SAME transaction — either all variants commit or all roll back.
+//
+// The "variant" concept exists because brokers can store both a JSONB-typed
+// and a BYTEA-typed copy of the schema under different table prefixes; each
+// variant's SQL is the same migration template rendered for one prefix. A
+// broker with no variants (e.g. the postgres controller) passes a one-element
+// slice.
+type MigrationVariant struct {
+	// SQL is the migration body, with all template placeholders already
+	// substituted by the caller (e.g. via the broker's own render helper).
+	// pgschema is intentionally agnostic about substitution rules so each
+	// broker can use its own renderer (pgstreambroker, for instance, also
+	// substitutes __STREAM_TABLE__).
+	SQL string
+	// VersionTable is the fully-qualified `<prefix>schema_version` table
+	// whose id=1 row this variant bumps. A row with no matching id=1 returns
+	// an error rather than silently no-op'ing.
+	VersionTable string
+}
+
+// IsRetryableSchemaExecErr reports whether err is a conflict caused by several
+// nodes running the same idempotent schema DDL at the same time. That is the
+// normal situation on a cluster start or a rolling restart: every node runs its
+// own EnsureSchema against the same database and nothing serialises them.
+//
+//   - 40P01 deadlock_detected — nodes taking the same catalog locks in
+//     different orders.
+//   - XX000 internal_error, which is how "tuple concurrently updated" arrives
+//     — raised by concurrent CREATE OR REPLACE FUNCTION on the same function.
+//   - 42P07 duplicate_table, 42710 duplicate_object and 23505
+//     unique_violation — CREATE TABLE/INDEX IF NOT EXISTS probes the catalog
+//     before it takes any lock, so two nodes both pass the probe and the loser
+//     gets a hard error instead of the NOTICE a sequential re-run produces.
+//     Which one it gets depends on when the winner committed relative to the
+//     loser's later checks: 42P07 from the relation-name check in
+//     heap_create_with_catalog, 42710 ("type ... already exists") from the
+//     row-type-name check that follows it if the commit landed between the
+//     two, 23505 from the unique index on pg_type/pg_class if the loser reached
+//     its own catalog inserts first.
+//
+// The name is deliberately bound to schema execs: 23505 and XX000 are ordinary
+// application failures anywhere else, and retrying them on a data path would
+// paper over real bugs. Only classify statements from a schema batch with this.
+//
+// Migrations deliberately do not use it: they run under AcquireMigrationLock,
+// which serialises nodes cluster-wide, so a duplicate object there is a real
+// bug and must surface rather than be retried away.
+func IsRetryableSchemaExecErr(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	switch pgErr.Code {
+	case pgerrcode.DeadlockDetected, pgerrcode.InternalError, pgerrcode.DuplicateTable, pgerrcode.DuplicateObject, pgerrcode.UniqueViolation:
+		return true
+	}
+	return false
+}
+
+const (
+	schemaExecAttempts    = 5
+	schemaExecBaseBackoff = 100 * time.Millisecond
+	schemaExecMaxBackoff  = 800 * time.Millisecond
+)
+
+// RetrySchemaExec runs exec, repeating it while it fails with a concurrent-DDL
+// conflict (see IsRetryableSchemaExecErr) and attempts remain. Any other error
+// is returned on the first occurrence, as is the last conflict once the
+// attempts are exhausted; a cancelled ctx aborts the loop and returns
+// ctx.Err(), so a shutdown mid-retry is reported as cancellation rather than
+// as a schema failure.
+//
+// Callers must make exec idempotent AND self-contained: a retry re-runs the
+// whole thing, so a schema batch has to be a single multi-statement Exec with
+// no arguments (pgx sends those over the simple query protocol, so the server
+// wraps them in one implicit transaction and a failed attempt rolls back
+// completely). A batch that opens its own BEGIN/COMMIT, or contains a
+// statement that cannot run inside a transaction block such as CREATE INDEX
+// CONCURRENTLY, breaks that invariant and must not be retried this way — the
+// schema-template tests in each consumer package pin it.
+//
+// The backoff is exponential with jitter: nodes that started together lose the
+// same race at the same instant, and retrying them in lockstep just recreates
+// the collision.
+func RetrySchemaExec(ctx context.Context, exec func(ctx context.Context) error) error {
+	var err error
+	for attempt := range schemaExecAttempts {
+		err = exec(ctx)
+		if err == nil {
+			return nil
+		}
+		if !IsRetryableSchemaExecErr(err) || attempt == schemaExecAttempts-1 {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(schemaExecBackoff(attempt)):
+		}
+	}
+	return err
+}
+
+// schemaExecBackoff returns the delay before the attempt after this one:
+// exponential from schemaExecBaseBackoff, capped at schemaExecMaxBackoff, and
+// spread over the upper half of that window so concurrent nodes separate
+// without any of them waiting the full cap.
+func schemaExecBackoff(attempt int) time.Duration {
+	d := schemaExecBaseBackoff << attempt
+	if d > schemaExecMaxBackoff {
+		d = schemaExecMaxBackoff
+	}
+	//nolint:gosec // it's a jitter.
+	return d/2 + time.Duration(rand.Int64N(int64(d/2)+1))
+}
+
+// ApplyMigrationInTx applies one migration step. For each variant in the
+// slice:
+//   - The variant's SQL is executed.
+//   - The variant's VersionTable id=1 row is updated to `version`.
+//
+// All variants run in one transaction; a failure on any rolls back every
+// effect, including any partial version bumps. The transactional wrap makes
+// retries safe even when migration SQL is not perfectly idempotent — the
+// previous attempt has fully rolled back.
+//
+// The body is retried up to migrationRetryAttempts times on transient
+// conflicts (40P01 deadlock_detected, XX000 "tuple concurrently updated" —
+// surfaces from concurrent CREATE OR REPLACE in a rolling deploy). ctx
+// cancellation aborts the retry loop immediately. This is deliberately
+// narrower than IsRetryableSchemaExecErr — see the note there on why
+// migrations must not retry away duplicate-object errors.
+func ApplyMigrationInTx(ctx context.Context, p txBeginner, label string, version int, variants []MigrationVariant) error {
+	if len(variants) == 0 {
+		return fmt.Errorf("%s: ApplyMigrationInTx v%d called with no variants", label, version)
+	}
+	var lastErr error
+	for attempt := 0; attempt < migrationRetryAttempts; attempt++ {
+		err := applyMigrationOnce(ctx, p, label, version, variants)
+		if err == nil {
+			return nil
+		}
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && (pgErr.Code == pgerrcode.DeadlockDetected || pgErr.Code == pgerrcode.InternalError) && attempt < migrationRetryAttempts-1 {
+			lastErr = err
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(migrationRetryBackoff):
+			}
+			continue
+		}
+		return err
+	}
+	return lastErr
+}
+
+const (
+	migrationRetryAttempts = 3
+	migrationRetryBackoff  = 200 * time.Millisecond
+)
+
+func applyMigrationOnce(ctx context.Context, p txBeginner, label string, version int, variants []MigrationVariant) error {
+	tx, err := p.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("%s: begin tx for migration v%d: %w", label, version, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	for _, variant := range variants {
+		if _, err := tx.Exec(ctx, variant.SQL); err != nil {
+			return fmt.Errorf("%s: apply migration v%d (target %s): %w", label, version, variant.VersionTable, err)
+		}
+		ct, err := tx.Exec(ctx, fmt.Sprintf(
+			`UPDATE %s SET schema_version = $1 WHERE id = 1`, variant.VersionTable), version)
+		if err != nil {
+			return fmt.Errorf("%s: bump schema_version to v%d (%s): %w", label, version, variant.VersionTable, err)
+		}
+		if ct.RowsAffected() == 0 {
+			return fmt.Errorf("%s: %s has no row id=1 — version tracking is corrupt, manually INSERT (1, %d) and retry", label, variant.VersionTable, version-1)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("%s: commit migration v%d: %w", label, version, err)
+	}
+	return nil
+}
+
+// AcquireMigrationLock takes a session-scoped Postgres advisory lock keyed on
+// `label`. Callers MUST defer the returned release function. While the lock
+// is held, every concurrent AcquireMigrationLock call against the same
+// Postgres instance and same label blocks — serialising the migration loop
+// across nodes during a rolling deploy.
+//
+// Implementation: a dedicated connection is checked out of the pool and held
+// for the lifetime of the lock. Migrations themselves run on different pool
+// connections; advisory locks are visible globally on the server, so the
+// lock-holding connection's identity is sufficient to serialise others.
+//
+// The release function explicitly executes pg_advisory_unlock BEFORE returning
+// the connection to the pool, so the next pool user does not inherit the lock.
+// If unlock fails (e.g. the connection has died), Postgres releases the lock
+// automatically on session end — no lock is ever stranded across process
+// crashes.
+//
+// The lock ID is derived from a FNV-64 hash of "pgschema/migration:" + label.
+// Different label strings → different lock IDs → independent serialisation
+// scopes (e.g. pgmapbroker migrations never block pgstreambroker migrations).
+func AcquireMigrationLock(ctx context.Context, p *pgxpool.Pool, label string) (release func(), err error) {
+	lockID := migrationLockID(label)
+	conn, err := p.Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%s: acquire migration lock connection: %w", label, err)
+	}
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, lockID); err != nil {
+		conn.Release()
+		return nil, fmt.Errorf("%s: pg_advisory_lock(%d): %w", label, lockID, err)
+	}
+	return func() {
+		// context.Background() so cleanup runs even when the caller's ctx is
+		// already canceled. Best-effort: a dead connection still gets reaped
+		// server-side, releasing the lock at session end.
+		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, lockID)
+		conn.Release()
+	}, nil
+}
+
+// migrationLockID returns a deterministic int64 lock ID for `label`. Different
+// labels get different IDs so unrelated consumers (e.g. pgmapbroker vs
+// pgstreambroker) never share a serialisation scope.
+func migrationLockID(label string) int64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte("pgschema/migration:" + label))
+	// Postgres advisory locks take an int64. Cast preserves all 64 bits.
+	return int64(h.Sum64())
+}
+
+// SetSchemaVersion updates schema_version=v in every table listed. Returns
+// an error if any UPDATE fails — used at the end of EnsureSchema to bring
+// the fresh-install baseline (which the DDL initialised at value 1) up to
+// the current schemaVersion. Failing softly here would leave a fresh install
+// stuck at version 1 and re-run the entire migration chain on next start.
+func SetSchemaVersion(ctx context.Context, q querier, label string, v int, versionTables []string) error {
+	for _, t := range versionTables {
+		if _, err := q.Exec(ctx, fmt.Sprintf(
+			`UPDATE %s SET schema_version = $1 WHERE id = 1`, t), v); err != nil {
+			return fmt.Errorf("%s: set schema_version=%d (%s): %w", label, v, t, err)
+		}
+	}
+	return nil
+}

@@ -1,0 +1,1204 @@
+import { Centrifuge, UnauthorizedError } from './centrifuge'
+import {
+  DisconnectedContext,
+  Error as CentrifugeError,
+  FilterNode,
+  PublicationContext,
+  TransportName,
+  UnsubscribedContext,
+  State,
+  SubscriptionState,
+  SubscribedContext,
+} from './types';
+import {
+  disconnectedCodes,
+  unsubscribedCodes,
+  connectingCodes,
+} from './codes';
+
+import WebSocket from 'ws';
+import EventSource from 'eventsource';
+import { fetch } from 'undici';
+import { ReadableStream } from 'node:stream/web';
+
+test('invalid endpoint', () => {
+  expect(() => { new Centrifuge('') }).toThrow();
+});
+
+test('state invalidated disconnect (3014) clears token and map state', () => {
+  const c = new Centrifuge([{
+    transport: 'websocket' as TransportName,
+    endpoint: 'ws://localhost:8000/connection/websocket',
+  }], {
+    websocket: WebSocket,
+    getToken: async () => 'new-connection-token',
+  });
+
+  // Set a connection token.
+  (c as any)._token = 'some-connection-token';
+
+  // Create a map subscription and simulate having cached state.
+  const sub = c.newMapSubscription('test:map', { getToken: async () => 'new-map-sub-token' });
+  (sub as any)._token = 'some-sub-token';
+  (sub as any)._offset = 42;
+  (sub as any)._epoch = 'abc';
+  (sub as any)._recover = true;
+  (sub as any)._mapPhase = 0; // Live
+  (sub as any)._mapStateBuffer = [{ key: 'k', data: {} }];
+  (sub as any)._mapStreamBuffer = [{ key: 'k2', data: {} }];
+  (sub as any)._mapCursor = 'cursor123';
+  (sub as any)._prevValueMap.set('k', 'prev');
+
+  // Create a stream subscription and simulate having cached state.
+  const streamSub = c.newSubscription('test:stream', { getToken: async () => 'new-stream-sub-token' });
+  (streamSub as any)._token = 'some-stream-sub-token';
+  (streamSub as any)._offset = 10;
+  (streamSub as any)._epoch = 'def';
+  // Stream sub with fossil delta would carry a delta base here.
+  (streamSub as any)._prevValueMap.set('', 'stream-delta-base');
+
+  // Create a shared poll subscription with a stale per-key delta base.
+  const sharedPollSub = c.newSharedPollSubscription('test:poll', {});
+  (sharedPollSub as any)._prevValueMap.set('k1', 'shared-poll-delta-base');
+
+  // Simulate server sending disconnect code 3014.
+  (c as any)._handleDisconnect({ code: 3014, reason: 'state invalidated' });
+
+  // Connection token cleared, refresh required.
+  expect((c as any)._token).toBe('');
+  expect((c as any)._refreshRequired).toBe(true);
+
+  // Map subscription: token and state cleared.
+  expect((sub as any)._token).toBe('');
+  expect((sub as any)._offset).toBeNull();
+  expect((sub as any)._epoch).toBeNull();
+  expect((sub as any)._recover).toBe(false);
+  expect((sub as any)._mapPhase).toBeNull();
+  expect((sub as any)._mapStateBuffer).toEqual([]);
+  expect((sub as any)._mapStreamBuffer).toEqual([]);
+  expect((sub as any)._mapCursor).toBe('');
+  expect((sub as any)._prevValueMap.size).toBe(0);
+
+  // Stream subscription: token cleared, recovery position reset to the
+  // unrecoverable sentinel (epoch "_", offset 0) so the resubscribe reports
+  // was_recovering=true, recovered=false, and stale delta base dropped.
+  expect((streamSub as any)._token).toBe('');
+  expect((streamSub as any)._offset).toBe(0);
+  expect((streamSub as any)._epoch).toBe('_');
+  expect((streamSub as any)._prevValueMap.size).toBe(0);
+
+  // Shared poll subscription: delta base also cleared for the same reason.
+  expect((sharedPollSub as any)._prevValueMap.size).toBe(0);
+});
+
+test('state invalidated disconnect (3014) resets server-side subscription recovery position', () => {
+  // Regression: server-side subscriptions cache their own recovery position
+  // separately from client-side subscriptions (_subs). 3014 must reset it too,
+  // or the next connect keeps requesting recovery from the pre-invalidation
+  // offset/epoch, defeating the point of state invalidation.
+  const c = new Centrifuge([{
+    transport: 'websocket' as TransportName,
+    endpoint: 'ws://localhost:8000/connection/websocket',
+  }], {
+    websocket: WebSocket,
+  });
+
+  (c as any)._serverSubs['news'] = {
+    offset: 5,
+    epoch: 'server-epoch',
+    recoverable: true,
+  };
+
+  (c as any)._handleDisconnect({ code: 3014, reason: 'state invalidated' });
+
+  expect((c as any)._serverSubs['news'].offset).toBe(0);
+  expect((c as any)._serverSubs['news'].epoch).toBe('_');
+  // recoverable left untouched — recovery is still requested, just from the
+  // sentinel position the server can never match.
+  expect((c as any)._serverSubs['news'].recoverable).toBe(true);
+});
+
+test('server-side subscription recovers with the epoch of its first publication', () => {
+  // A connect reply has no epoch for a channel that had no stream yet: the server
+  // sends the epoch with the first publication and checks it on recovery.
+  const c = new Centrifuge([{
+    transport: 'websocket' as TransportName,
+    endpoint: 'ws://localhost:8000/connection/websocket',
+  }], {
+    websocket: WebSocket,
+  });
+
+  (c as any)._serverSubs['news'] = { offset: 0, epoch: '', recoverable: true };
+
+  (c as any)._handlePublication('news', { data: {}, offset: 1, epoch: 'e1' });
+  expect((c as any)._serverSubs['news'].offset).toBe(1);
+  expect((c as any)._serverSubs['news'].epoch).toBe('e1');
+
+  (c as any)._handlePublication('news', { data: {}, offset: 2 });
+  expect((c as any)._serverSubs['news'].offset).toBe(2);
+  expect((c as any)._serverSubs['news'].epoch).toBe('e1');
+});
+
+test.each([
+  ['a static token', 'static-connection-token'],
+  ['no token', ''],
+])('state invalidated disconnect (3014) without getToken keeps %s and resets state', (_, token) => {
+  // Without getToken the client can't get a new token: it must reconnect with
+  // the one it has instead of stopping on a configuration error.
+  const c = new Centrifuge([{
+    transport: 'websocket' as TransportName,
+    endpoint: 'ws://localhost:8000/connection/websocket',
+  }], {
+    websocket: WebSocket,
+    token: token,
+  });
+  const streamSub = c.newSubscription('test:stream', { token: 'static-stream-sub-token' });
+  (streamSub as any)._offset = 10;
+  (streamSub as any)._epoch = 'def';
+  const mapSub = c.newMapSubscription('test:map', { token: 'static-map-sub-token' });
+
+  (c as any)._handleDisconnect({ code: 3014, reason: 'state invalidated' });
+
+  expect((c as any)._token).toBe(token);
+  expect((c as any)._refreshRequired).toBe(false);
+  expect((streamSub as any)._offset).toBe(0);
+  expect((streamSub as any)._epoch).toBe('_');
+  // Same for subscriptions without getToken: they resubscribe with their token.
+  expect((streamSub as any)._token).toBe('static-stream-sub-token');
+  expect((mapSub as any)._token).toBe('static-map-sub-token');
+  expect((mapSub as any)._offset).toBeNull();
+});
+
+test('state invalidated unsubscribe (2502) clears sub token and map state', () => {
+  const c = new Centrifuge([{
+    transport: 'websocket' as TransportName,
+    endpoint: 'ws://localhost:8000/connection/websocket',
+  }], {
+    websocket: WebSocket,
+  });
+
+  // Set a connection token — should NOT be cleared by per-sub unsubscribe.
+  (c as any)._token = 'connection-token';
+
+  // Create a map subscription with cached state.
+  const mapSub = c.newMapSubscription('test:map', { getToken: async () => 'new-map-sub-token' });
+  (mapSub as any)._token = 'map-sub-token';
+  (mapSub as any)._offset = 42;
+  (mapSub as any)._epoch = 'abc';
+  (mapSub as any)._recover = true;
+  (mapSub as any)._mapPhase = 0;
+  (mapSub as any)._mapStateBuffer = [{ key: 'k', data: {} }];
+  (mapSub as any)._prevValueMap.set('k', 'prev');
+
+  // Create a stream subscription — should NOT be affected.
+  const streamSub = c.newSubscription('test:stream');
+  (streamSub as any)._token = 'stream-sub-token';
+  (streamSub as any)._offset = 10;
+
+  // Simulate server sending unsubscribe code 2502 for the map subscription only. The
+  // server sends it for a subscribed map subscription only.
+  (mapSub as any).state = 'subscribed';
+  (c as any)._handleUnsubscribe('test:map', { code: 2502, reason: 'server tags filter changed' });
+
+  // Map subscription: token and state cleared, moves to subscribing.
+  expect((mapSub as any)._token).toBe('');
+  expect((mapSub as any)._offset).toBeNull();
+  expect((mapSub as any)._epoch).toBeNull();
+  expect((mapSub as any)._mapPhase).toBeNull();
+  expect((mapSub as any)._mapStateBuffer).toEqual([]);
+  expect((mapSub as any)._prevValueMap.size).toBe(0);
+
+  // Connection token NOT cleared.
+  expect((c as any)._token).toBe('connection-token');
+
+  // Stream subscription NOT affected.
+  expect((streamSub as any)._token).toBe('stream-sub-token');
+  expect((streamSub as any)._offset).toBe(10);
+});
+
+test('newMapSubscription propagates tagsFilter from constructor options', () => {
+  const c = new Centrifuge([{
+    transport: 'websocket' as TransportName,
+    endpoint: 'ws://localhost:8000/connection/websocket',
+  }], {
+    websocket: WebSocket,
+  });
+
+  const filter: FilterNode = { key: 'team', cmp: 'eq', val: 'eng' };
+  const sub = c.newMapSubscription('test:map', { tagsFilter: filter });
+  expect((sub as any)._tagsFilter).toEqual(filter);
+
+  // Variants must propagate it too.
+  const clientsSub = c.newMapClientsSubscription('$clients:test', { tagsFilter: filter });
+  expect((clientsSub as any)._tagsFilter).toEqual(filter);
+
+  const usersSub = c.newMapUsersSubscription('$users:test', { tagsFilter: filter });
+  expect((usersSub as any)._tagsFilter).toEqual(filter);
+});
+
+test('newSharedPollSubscription propagates token, getToken, and data from constructor options', () => {
+  const c = new Centrifuge([{
+    transport: 'websocket' as TransportName,
+    endpoint: 'ws://localhost:8000/connection/websocket',
+  }], {
+    websocket: WebSocket,
+  });
+
+  const getToken = async () => 'fresh-token';
+  const data = { extra: 1 };
+  const sub = c.newSharedPollSubscription('poll:test', {
+    token: 'static-token',
+    getToken,
+    data,
+  });
+
+  expect((sub as any)._token).toBe('static-token');
+  expect((sub as any)._getToken).toBe(getToken);
+  expect((sub as any)._data).toEqual(data);
+});
+
+(typeof globalThis.WebSocket !== 'undefined' ? test.skip : test)('no websocket constructor', async () => {
+  const c = new Centrifuge('ws://localhost:8000/connection/websocket');
+  expect(() => { c.connect() }).toThrow();
+});
+
+const transportCases = [
+  ['websocket', 'ws://localhost:8000/connection/websocket'],
+  ['http_stream', 'http://localhost:8000/connection/http_stream'],
+  ['sse', 'http://localhost:8000/connection/sse'],
+]
+
+const websocketOnly = [
+  ['websocket', 'ws://localhost:8000/connection/websocket'],
+]
+
+test.each(transportCases)("%s: connects and disconnects", async (transport, endpoint) => {
+  const c = new Centrifuge([{
+    transport: transport as TransportName,
+    endpoint: endpoint,
+  }], {
+    websocket: WebSocket,
+    fetch: fetch,
+    eventsource: EventSource,
+    readableStream: ReadableStream,
+  });
+
+  let disconnectCalled: any;
+  const p = new Promise<DisconnectedContext>((resolve, _) => {
+    disconnectCalled = resolve;
+  })
+
+  c.on('disconnected', (ctx) => {
+    disconnectCalled(ctx);
+  })
+
+  c.connect();
+  await c.ready(5000);
+  expect(c.state).toBe(State.Connected);
+
+  c.disconnect();
+  const ctx = await p;
+  expect(c.state).toBe(State.Disconnected);
+  expect(ctx.code).toBe(disconnectedCodes.disconnectCalled);
+});
+
+test.each(transportCases)("%s: subscribe and unsubscribe", async (transport, endpoint) => {
+  const c = new Centrifuge([{
+    transport: transport as TransportName,
+    endpoint: endpoint,
+  }], {
+    websocket: WebSocket,
+    fetch: fetch,
+    eventsource: EventSource,
+    readableStream: ReadableStream,
+    emulationEndpoint: 'http://localhost:8000/emulation'
+  });
+
+  let unsubscribeCalled: any;
+  const p = new Promise<UnsubscribedContext>((resolve, _) => {
+    unsubscribeCalled = resolve;
+  })
+
+  c.connect();
+  await c.ready(5000);
+  const sub = c.newSubscription('test');
+  sub.on('unsubscribed', (ctx: UnsubscribedContext) => {
+    unsubscribeCalled(ctx);
+  });
+
+  sub.subscribe()
+  await sub.ready(5000);
+  expect(sub.state).toBe(SubscriptionState.Subscribed);
+  expect(c.state).toBe(State.Connected);
+
+  sub.unsubscribe();
+  c.disconnect();
+
+  const ctx = await p;
+
+  expect(sub.state).toBe(SubscriptionState.Unsubscribed);
+  expect(c.state).toBe(State.Disconnected);
+  expect(ctx.code).toBe(unsubscribedCodes.unsubscribeCalled)
+});
+
+test.each(transportCases)("%s: publish and receive message", async (transport, endpoint) => {
+  const c = new Centrifuge([{
+    transport: transport as TransportName,
+    endpoint: endpoint,
+  }], {
+    websocket: WebSocket,
+    fetch: fetch,
+    eventsource: EventSource,
+    readableStream: ReadableStream,
+    emulationEndpoint: 'http://localhost:8000/emulation'
+  });
+
+  c.connect();
+  await c.ready(5000);
+
+  let publicationReceived: any;
+  const p = new Promise<PublicationContext>((resolve, _) => {
+    publicationReceived = resolve;
+  })
+
+  const sub = c.newSubscription('test');
+  sub.on('publication', (ctx: PublicationContext) => {
+    publicationReceived(ctx);
+  });
+  sub.subscribe()
+  await sub.ready(5000);
+
+  await sub.publish({ "my": "data" });
+
+  const ctx = await p;
+  c.disconnect();
+  expect(ctx.data).toStrictEqual({ "my": "data" });
+});
+
+
+test.each(transportCases)("%s: rpc buffered till connected", async (transport, endpoint) => {
+  const c = new Centrifuge([{
+    transport: transport as TransportName,
+    endpoint: endpoint,
+  }], {
+    websocket: WebSocket,
+    fetch: fetch,
+    eventsource: EventSource,
+    readableStream: ReadableStream,
+    emulationEndpoint: 'http://localhost:8000/emulation'
+  });
+
+  let errorReceived: any;
+  const p = new Promise<CentrifugeError>((resolve, _) => {
+    errorReceived = resolve;
+  })
+
+  c.rpc('method', { "my": "data" }).then(function () {
+    // we are not expecting data in this test, we expect Not Available error.
+  }, function (err: CentrifugeError) {
+    errorReceived(err);
+  });
+
+  // note: connect called after issuing rpc.
+  c.connect();
+
+  const rpcErr = await p;
+  c.disconnect();
+  expect(rpcErr.code).toStrictEqual(108);
+});
+
+test.each(transportCases)("%s: handles offline/online events", async (transport, endpoint) => {
+  const networkEventTarget = new EventTarget();
+
+  const c = new Centrifuge([{
+    transport: transport as TransportName,
+    endpoint: endpoint,
+  }], {
+    websocket: WebSocket,
+    fetch: fetch,
+    eventsource: EventSource,
+    readableStream: ReadableStream,
+    emulationEndpoint: 'http://localhost:8000/emulation',
+    networkEventTarget: networkEventTarget,
+  });
+
+  let connectingCalled: any;
+  const p = new Promise<DisconnectedContext>((resolve, _) => {
+    connectingCalled = resolve;
+  })
+
+  c.on('connecting', (ctx) => {
+    if (ctx.code == connectingCodes.transportClosed) {
+      connectingCalled(ctx);
+    }
+  })
+
+  c.connect();
+  await c.ready(5000);
+  expect(c.state).toBe(State.Connected);
+
+  const offlineEvent = new Event('offline', { bubbles: true });
+  networkEventTarget.dispatchEvent(offlineEvent);
+
+  const ctx = await p;
+  expect(c.state).toBe(State.Connecting);
+  expect(ctx.code).toBe(connectingCodes.transportClosed);
+
+  const onlineEvent = new Event('online', { bubbles: true });
+  networkEventTarget.dispatchEvent(onlineEvent);
+
+  let disconnectCalled: any;
+  const disconnectedPromise = new Promise<DisconnectedContext>((resolve, _) => {
+    disconnectCalled = resolve;
+  })
+  c.on('disconnected', (ctx) => {
+    disconnectCalled(ctx);
+  })
+
+  await c.ready(5000);
+  expect(c.state).toBe(State.Connected);
+
+  c.disconnect();
+  await disconnectedPromise;
+  expect(c.state).toBe(State.Disconnected);
+});
+
+test.each(transportCases)("%s: not connecting on online in disconnected state", async (transport, endpoint) => {
+  const networkEventTarget = new EventTarget();
+
+  const c = new Centrifuge([{
+    transport: transport as TransportName,
+    endpoint: endpoint,
+  }], {
+    websocket: WebSocket,
+    fetch: fetch,
+    eventsource: EventSource,
+    readableStream: ReadableStream,
+    emulationEndpoint: 'http://localhost:8000/emulation',
+    networkEventTarget: networkEventTarget,
+  });
+
+  c.connect();
+  await c.ready(5000);
+  expect(c.state).toBe(State.Connected);
+
+  await disconnectClient(c);
+
+  const onlineEvent = new Event('online', { bubbles: true });
+  networkEventTarget.dispatchEvent(onlineEvent);
+  expect(c.state).toBe(State.Disconnected);
+});
+
+test.each(transportCases)("%s: subscribe and presence", async (transport, endpoint) => {
+  const c = new Centrifuge([{
+    transport: transport as TransportName,
+    endpoint: endpoint,
+  }], {
+    websocket: WebSocket,
+    fetch: fetch,
+    eventsource: EventSource,
+    readableStream: ReadableStream,
+    emulationEndpoint: 'http://localhost:8000/emulation'
+  });
+
+  c.connect();
+  await c.ready(5000);
+  const sub = c.newSubscription('test');
+
+  sub.subscribe()
+  await sub.ready(5000);
+  expect(sub.state).toBe(SubscriptionState.Subscribed);
+  expect(c.state).toBe(State.Connected);
+
+  const presence = await sub.presence();
+  expect(Object.keys(presence.clients).length).toBeGreaterThan(0);
+
+  const presenceStats = await sub.presenceStats();
+  expect(presenceStats.numClients).toBeGreaterThan(0)
+  expect(presenceStats.numUsers).toBeGreaterThan(0);
+
+  await disconnectClient(c);
+});
+
+test.each(transportCases)("%s: connect disconnect loop", async (transport, endpoint) => {
+  const c = new Centrifuge([{
+    transport: transport as TransportName,
+    endpoint: endpoint,
+  }], {
+    websocket: WebSocket,
+    fetch: fetch,
+    eventsource: EventSource,
+    readableStream: ReadableStream,
+    emulationEndpoint: 'http://localhost:8000/emulation'
+  });
+
+  let disconnectCalled: any;
+  const disconnectedPromise = new Promise<DisconnectedContext>((resolve, _) => {
+    disconnectCalled = resolve;
+  })
+  c.on('disconnected', (ctx) => {
+    disconnectCalled(ctx);
+  })
+
+  for (let index = 0; index < 10; index++) {
+    c.connect();
+    c.disconnect();
+  }
+  expect(c.state).toBe(State.Disconnected);
+  await disconnectedPromise;
+});
+
+test.each(transportCases)("%s: subscribe and unsubscribe loop", async (transport, endpoint) => {
+  const c = new Centrifuge([{
+    transport: transport as TransportName,
+    endpoint: endpoint,
+  }], {
+    websocket: WebSocket,
+    fetch: fetch,
+    eventsource: EventSource,
+    readableStream: ReadableStream,
+    emulationEndpoint: 'http://localhost:8000/emulation'
+  });
+
+  c.connect();
+  await c.ready(5000);
+  const sub = c.newSubscription('test');
+
+  let unsubcribeCalled: any;
+  const unsubscribedPromise = new Promise<UnsubscribedContext>((resolve, _) => {
+    unsubcribeCalled = resolve;
+  })
+  sub.on('unsubscribed', (ctx) => {
+    unsubcribeCalled(ctx);
+  })
+
+  for (let index = 0; index < 10; index++) {
+    sub.subscribe();
+    sub.unsubscribe();
+  }
+  expect(sub.state).toBe(SubscriptionState.Unsubscribed);
+  await unsubscribedPromise;
+
+  sub.subscribe()
+
+  const retryWithDelay = async (fn, validate, maxRetries, delay) => {
+    for (let i = 0; i < maxRetries; i++) {
+      const result = await fn();
+      if (validate(result)) {
+        return result;
+      }
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+    throw new Error("Validation failed after retries");
+  };
+
+  const presenceStats1 = await retryWithDelay(
+    () => sub.presenceStats(),
+    (stats: any) => stats.numClients === 1 && stats.numUsers === 1,
+    10,
+    200
+  );
+
+  const presence1 = await retryWithDelay(
+    () => sub.presence(),
+    (presence: any) => Object.keys(presence.clients).length === 1,
+    10,
+    200
+  );
+
+  expect(presenceStats1.numClients).toBe(1);
+  expect(presenceStats1.numUsers).toBe(1);
+  expect(Object.keys(presence1.clients).length).toBe(1);
+
+  await sub.unsubscribe()
+
+  const presenceStats2 = await retryWithDelay(
+    () => c.presenceStats('test'),
+    (stats: any) => stats.numClients === 0 && stats.numUsers === 0,
+    10,
+    200
+  );
+
+  const presence2 = await retryWithDelay(
+    () => c.presence('test'),
+    (presence: any) => Object.keys(presence.clients).length === 0,
+    10,
+    200
+  );
+
+  expect(presenceStats2.numClients).toBe(0);
+  expect(presenceStats2.numUsers).toBe(0);
+  expect(Object.keys(presence2.clients).length).toBe(0);
+
+  await disconnectClient(c);
+});
+
+// Make sure we can unsubscribe right after connect called and connect/subscribe
+// frames not sent yet.
+test.each(transportCases)("%s: unsubscribe right after connect", async (transport, endpoint) => {
+  const c = new Centrifuge([{
+    transport: transport as TransportName,
+    endpoint: endpoint,
+  }], {
+    websocket: WebSocket,
+    fetch: fetch,
+    eventsource: EventSource,
+    readableStream: ReadableStream,
+    emulationEndpoint: 'http://localhost:8000/emulation'
+  });
+
+  c.connect();
+  await c.ready(5000);
+
+  const sub = c.newSubscription('test');
+
+  let unsubcribeCalled: any;
+  const unsubscribedPromise = new Promise<UnsubscribedContext>((resolve, _) => {
+    unsubcribeCalled = resolve;
+  })
+  let subcribeCalled: any;
+  const subscribedPromise = new Promise<SubscribedContext>((resolve, _) => {
+    subcribeCalled = resolve;
+  })
+
+  sub.on('subscribed', (ctx) => {
+    subcribeCalled(ctx);
+  })
+  sub.on('unsubscribed', (ctx) => {
+    unsubcribeCalled(ctx);
+  })
+
+  sub.subscribe();
+  c.disconnect();
+  c.connect();
+  sub.unsubscribe();
+
+  expect(sub.state).toBe(SubscriptionState.Unsubscribed);
+  await unsubscribedPromise;
+
+  sub.subscribe();
+  await subscribedPromise;
+
+  await disconnectClient(c);
+});
+
+// Make sure we can unsubscribe right after connect frame sent but reply has not been yet received.
+// This is important to cover bug described in https://github.com/centrifugal/centrifuge-js/pull/274.
+test.each(websocketOnly)("%s: unsubscribe in between connect command and reply", async (transport, endpoint) => {
+  const c = new Centrifuge([{
+    transport: transport as TransportName,
+    endpoint: endpoint,
+  }], {
+    websocket: WebSocket,
+    fetch: fetch,
+    eventsource: EventSource,
+    readableStream: ReadableStream,
+    emulationEndpoint: 'http://localhost:8000/emulation'
+  });
+
+  const sub = c.newSubscription('test');
+
+  let unsubcribeCalled: any;
+  const unsubscribedPromise = new Promise<UnsubscribedContext>((resolve, _) => {
+    unsubcribeCalled = resolve;
+  })
+  let subcribeCalled: any;
+  const subscribedPromise = new Promise<SubscribedContext>((resolve, _) => {
+    subcribeCalled = resolve;
+  })
+
+  // @ts-ignore this is only for test purposes.
+  c.on('__centrifuge_debug:connect_frame_sent', () => {
+    sub.unsubscribe();
+    unsubcribeCalled()
+  })
+
+  sub.on('subscribed', (ctx) => {
+    subcribeCalled(ctx);
+  })
+  sub.on('unsubscribed', (ctx) => {
+    unsubcribeCalled(ctx);
+  })
+
+  sub.subscribe();
+  c.connect();
+
+  await unsubscribedPromise;
+  await c.ready()
+
+  await new Promise(r => setTimeout(r, 2000));
+  sub.subscribe();
+
+  await subscribedPromise;
+
+  await disconnectClient(c);
+});
+
+// Make sure we can resubscribe when offline event triggered before WebSocket transport open.
+test.each(websocketOnly)("%s: reconnect after close before transport open", async (transport, endpoint) => {
+  const networkEventTarget = new EventTarget();
+
+  const c = new Centrifuge([{
+    transport: transport as TransportName,
+    endpoint: endpoint,
+  }], {
+    websocket: WebSocket,
+    fetch: fetch,
+    eventsource: EventSource,
+    readableStream: ReadableStream,
+    emulationEndpoint: 'http://localhost:8000/emulation',
+    networkEventTarget: networkEventTarget,
+  });
+
+  const offlineEvent = new Event('offline', { bubbles: true });
+
+  // @ts-ignore this is only for test purposes.
+  c.once('__centrifuge_debug:transport_initialized', () => {
+    networkEventTarget.dispatchEvent(offlineEvent);
+  })
+
+  c.connect();
+  await c.ready();
+  await disconnectClient(c);
+});
+
+async function disconnectClient(c: Centrifuge): Promise<void> {
+  let disconnectCalled: any;
+  const disconnectedPromise = new Promise<DisconnectedContext>((resolve) => {
+    disconnectCalled = resolve;
+  });
+  c.on('disconnected', (ctx) => {
+    disconnectCalled(ctx);
+  });
+  c.disconnect();
+  return disconnectedPromise.then(() => {
+    expect(c.state).toBe(State.Disconnected);
+  });
+}
+
+test.each(transportCases)("%s: connects and subscribes with token", async (transport, endpoint) => {
+  for (let index = 0; index < 5; index++) {
+    // Connection token for anonymous user without ttl. Using an HMAC secret key used in tests ("secret").
+    const connectToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE3MzgwNzg4MjR9.MTb3higWfFW04E9-8wmTFOcf4MEm-rMDQaNKJ1VU_n4";
+    let numConnectTokenCalls = 0;
+    let numSubscribeTokenCalls = 0;
+    const c = new Centrifuge([{
+      transport: transport as TransportName,
+      endpoint: endpoint,
+    }], {
+      getToken: async function (): Promise<string> {
+        const sleep = (ms: any) => new Promise(resolve => setTimeout(resolve, ms));
+        await sleep(Math.random() * 100);
+        numConnectTokenCalls++;
+        return connectToken;
+      },
+      websocket: WebSocket,
+      fetch: fetch,
+      eventsource: EventSource,
+      readableStream: ReadableStream,
+      emulationEndpoint: 'http://localhost:8000/emulation',
+    });
+
+    // Subscription tokens for anonymous users without ttl. Using an HMAC secret key used in tests ("secret").
+    const testTokens = {
+      'test1': "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE3Mzc1MzIzNDgsImNoYW5uZWwiOiJ0ZXN0MSJ9.eqPQxbBtyYxL8Hvbkm-P6aH7chUsSG_EMWe-rTwF_HI",
+    }
+
+    c.connect();
+
+    const sub = c.newSubscription('test1', {
+      getToken: async function () {
+        // Sleep for a random time between 0 and 100 milliseconds to emulate network.
+        const sleep = (ms: any) => new Promise(resolve => setTimeout(resolve, ms));
+        await sleep(Math.random() * 100);
+        numSubscribeTokenCalls++;
+        return testTokens['test1'];
+      }
+    });
+
+    // Create a promise for the 'unsubscribed' event of this subscription.
+    const unsubscribedPromise = new Promise<UnsubscribedContext>((resolve) => {
+      sub.on("unsubscribed", (ctx) => {
+        resolve(ctx);
+      });
+    });
+
+    // Actually subscribe.
+    sub.subscribe();
+
+    await sub.ready(5000);
+    expect(sub.state).toBe(SubscriptionState.Subscribed);
+
+    // The client itself should be connected now.
+    expect(c.state).toBe(State.Connected);
+
+    sub.unsubscribe();
+    c.disconnect();
+
+    await unsubscribedPromise;
+    expect(sub.state).toBe(SubscriptionState.Unsubscribed);
+    expect(c.state).toBe(State.Disconnected);
+
+    expect(numConnectTokenCalls).toBe(1);
+    expect(numSubscribeTokenCalls).toBe(1);
+  }
+});
+
+test.each(transportCases)("%s: subscribes and unsubscribes from many subs", async (transport, endpoint) => {
+  for (let index = 0; index < 5; index++) {
+    const c = new Centrifuge([{
+      transport: transport as TransportName,
+      endpoint: endpoint,
+    }], {
+      websocket: WebSocket,
+      fetch: fetch,
+      eventsource: EventSource,
+      readableStream: ReadableStream,
+      emulationEndpoint: 'http://localhost:8000/emulation',
+      // debug: true
+    });
+    // Keep an array of promises so that we can wait for each subscription's 'unsubscribed' event.
+    const unsubscribedPromises: Promise<UnsubscribedContext>[] = [];
+
+    const channels = [
+      'test1',
+      'test2',
+      'test3',
+      'test4',
+      'test5',
+    ];
+
+    // Subscription tokens for anonymous users without ttl. Using an HMAC secret key used in tests ("secret").
+    const testTokens = {
+      'test1': "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE3Mzc1MzIzNDgsImNoYW5uZWwiOiJ0ZXN0MSJ9.eqPQxbBtyYxL8Hvbkm-P6aH7chUsSG_EMWe-rTwF_HI",
+      'test2': "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE3Mzc1MzIzODcsImNoYW5uZWwiOiJ0ZXN0MiJ9.tTJB3uSa8XpEmCvfkmrSKclijofnJ5RkQk6L2SaGtUE",
+      'test3': "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE3Mzc1MzIzOTgsImNoYW5uZWwiOiJ0ZXN0MyJ9.nyLcMrIot441CszOKska7kQIjo2sEm8pSxV1XWfNCsI",
+      'test4': "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE3Mzc1MzI0MDksImNoYW5uZWwiOiJ0ZXN0NCJ9.wWAX2AhJX6Ep4HVexQWSVF3-cWytVhzY9Pm7QsMdCsI",
+      'test5': "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE3Mzc1MzI0MTgsImNoYW5uZWwiOiJ0ZXN0NSJ9.hCSfpHYws5TXLKkN0bW0DU6C-wgEUNuhGaIy8W1sT9o"
+    }
+
+    c.connect();
+
+    const subscriptions: any[] = [];
+
+    for (const channel of channels) {
+      const sub = c.newSubscription(channel, {
+        getToken: async function () {
+          // Sleep for a random time between 0 and 100 milliseconds to emulate network.
+          const sleep = (ms: any) => new Promise(resolve => setTimeout(resolve, ms));
+          await sleep(Math.random() * 100);
+          return testTokens[channel];
+        }
+      });
+
+      // Create a promise for the 'unsubscribed' event of this subscription.
+      const unsubPromise = new Promise<UnsubscribedContext>((resolve) => {
+        sub.on("unsubscribed", (ctx) => {
+          resolve(ctx);
+        });
+      });
+      unsubscribedPromises.push(unsubPromise);
+
+      // Actually subscribe.
+      sub.subscribe();
+      subscriptions.push(sub);
+    }
+
+    // Wait until all subscriptions are in the Subscribed state.
+    await Promise.all(
+      subscriptions.map(async (sub) => {
+        await sub.ready(5000);
+        expect(sub.state).toBe(SubscriptionState.Subscribed);
+      })
+    );
+
+    // The client itself should be connected now.
+    expect(c.state).toBe(State.Connected);
+
+    // Unsubscribe from all and then disconnect.
+    subscriptions.forEach((sub) => {
+      sub.unsubscribe();
+    });
+    c.disconnect();
+
+    // Wait until all 'unsubscribed' events are received.
+    const unsubscribedContexts = await Promise.all(unsubscribedPromises);
+
+    // Confirm each subscription is now Unsubscribed.
+    subscriptions.forEach((sub) => {
+      expect(sub.state).toBe(SubscriptionState.Unsubscribed);
+    });
+
+    // The client should be disconnected.
+    expect(c.state).toBe(State.Disconnected);
+
+    // Assert the correct unsubscribe code for each subscription.
+    unsubscribedContexts.forEach((ctx) => {
+      expect(ctx.code).toBe(unsubscribedCodes.unsubscribeCalled);
+    });
+  }
+});
+
+test.each(transportCases)("%s: retries connection getToken error", async (transport, endpoint) => {
+  let shouldThrowConnectError = true;
+  const connectToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE3MzgwNzg4MjR9.MTb3higWfFW04E9-8wmTFOcf4MEm-rMDQaNKJ1VU_n4";
+  let numConnectTokenCalls = 0;
+
+  const c = new Centrifuge([{
+    transport: transport as TransportName,
+    endpoint: endpoint,
+  }], {
+    getToken: async function (): Promise<string> {
+      numConnectTokenCalls++;
+      if (shouldThrowConnectError) {
+        shouldThrowConnectError = false;
+        throw new Error("Connection token error");
+      }
+      return connectToken;
+    },
+    websocket: WebSocket,
+    fetch: fetch,
+    eventsource: EventSource,
+    readableStream: ReadableStream,
+    emulationEndpoint: 'http://localhost:8000/emulation',
+    minReconnectDelay: 1,
+  });
+
+  c.connect();
+  await c.ready(5000);
+
+  expect(c.state).toBe(State.Connected);
+  expect(numConnectTokenCalls).toBe(2); // Ensure getToken was retried.
+
+  await disconnectClient(c);
+});
+
+test.each(transportCases)("%s: retries connection getData error", async (transport, endpoint) => {
+  let shouldThrowGetDataError = true;
+  let numGetDataCalls = 0;
+
+  const c = new Centrifuge([{
+    transport: transport as TransportName,
+    endpoint: endpoint,
+  }], {
+    getData: async function (): Promise<any> {
+      numGetDataCalls++;
+      if (shouldThrowGetDataError) {
+        shouldThrowGetDataError = false;
+        throw new Error("getData token error");
+      }
+      return {};
+    },
+    websocket: WebSocket,
+    fetch: fetch,
+    eventsource: EventSource,
+    readableStream: ReadableStream,
+    emulationEndpoint: 'http://localhost:8000/emulation',
+    minReconnectDelay: 1,
+  });
+
+  c.connect();
+  await c.ready(5000);
+
+  expect(c.state).toBe(State.Connected);
+  expect(numGetDataCalls).toBe(2); // Ensure getData was retried.
+
+  await disconnectClient(c);
+});
+
+test.each(transportCases)("%s: retries subscription getToken error", async (transport, endpoint) => {
+  const connectToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE3MzgwNzg4MjR9.MTb3higWfFW04E9-8wmTFOcf4MEm-rMDQaNKJ1VU_n4";
+  const testTokens = {
+    'test1': "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE3Mzc1MzIzNDgsImNoYW5uZWwiOiJ0ZXN0MSJ9.eqPQxbBtyYxL8Hvbkm-P6aH7chUsSG_EMWe-rTwF_HI",
+  };
+
+  let shouldThrowSubscriptionError = true;
+  let numSubscribeTokenCalls = 0;
+
+  const c = new Centrifuge([{
+    transport: transport as TransportName,
+    endpoint: endpoint,
+  }], {
+    getToken: async function (): Promise<string> {
+      return connectToken;
+    },
+    websocket: WebSocket,
+    fetch: fetch,
+    eventsource: EventSource,
+    readableStream: ReadableStream,
+    emulationEndpoint: 'http://localhost:8000/emulation',
+  });
+
+  const sub = c.newSubscription('test1', {
+    getToken: async function () {
+      numSubscribeTokenCalls++;
+      if (shouldThrowSubscriptionError) {
+        shouldThrowSubscriptionError = false;
+        throw new Error("Subscription token error");
+      }
+      return testTokens['test1'];
+    },
+    minResubscribeDelay: 1,
+  });
+
+  c.connect();
+  sub.subscribe();
+
+  await sub.ready(5000);
+  expect(sub.state).toBe(SubscriptionState.Subscribed);
+  expect(numSubscribeTokenCalls).toBe(2); // Ensure getToken was retried.
+  await disconnectClient(c);
+});
+
+test.each(transportCases)("%s: retries subscription getData error", async (transport, endpoint) => {
+  const testTokens = {
+    'test1': "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE3Mzc1MzIzNDgsImNoYW5uZWwiOiJ0ZXN0MSJ9.eqPQxbBtyYxL8Hvbkm-P6aH7chUsSG_EMWe-rTwF_HI",
+  };
+
+  let shouldThrowGetDataError = true;
+  let numGetDataCalls = 0;
+
+  const c = new Centrifuge([{
+    transport: transport as TransportName,
+    endpoint: endpoint,
+  }], {
+    websocket: WebSocket,
+    fetch: fetch,
+    eventsource: EventSource,
+    readableStream: ReadableStream,
+    emulationEndpoint: 'http://localhost:8000/emulation',
+  });
+
+  const sub = c.newSubscription('test1', {
+    getToken: async function () {
+      return testTokens['test1'];
+    },
+    getData: async function (): Promise<any> {
+      numGetDataCalls++;
+      if (shouldThrowGetDataError) {
+        shouldThrowGetDataError = false;
+        throw new Error("getData token error");
+      }
+      return {};
+    },
+    minResubscribeDelay: 1,
+  });
+
+  c.connect();
+  sub.subscribe();
+
+  await sub.ready(5000);
+  expect(sub.state).toBe(SubscriptionState.Subscribed);
+  expect(numGetDataCalls).toBe(2); // Ensure getToken was retried.
+  await disconnectClient(c);
+});
+
+test.each(transportCases)("%s: disconnected with unauthorized", async (transport, endpoint) => {
+  const c = new Centrifuge([{
+    transport: transport as TransportName,
+    endpoint: endpoint,
+  }], {
+    getToken: async function (): Promise<string> {
+      throw new UnauthorizedError('');
+    },
+    websocket: WebSocket,
+    fetch: fetch,
+    eventsource: EventSource,
+    readableStream: ReadableStream,
+    emulationEndpoint: 'http://localhost:8000/emulation',
+  });
+
+  let disconnectCalled: any;
+  const p = new Promise<DisconnectedContext>((resolve, _) => {
+    disconnectCalled = resolve;
+  })
+
+  c.on('disconnected', (ctx) => {
+    disconnectCalled(ctx);
+  })
+
+  c.connect();
+
+  const ctx = await p;
+  expect(c.state).toBe(State.Disconnected);
+  expect(ctx.code).toBe(disconnectedCodes.unauthorized);
+});
+
+test.each(transportCases)("%s: unsubscribed with unauthorized", async (transport, endpoint) => {
+  const c = new Centrifuge([{
+    transport: transport as TransportName,
+    endpoint: endpoint,
+  }], {
+    websocket: WebSocket,
+    fetch: fetch,
+    eventsource: EventSource,
+    readableStream: ReadableStream,
+    emulationEndpoint: 'http://localhost:8000/emulation',
+  });
+
+  let unsubscribeCalled: any;
+  const up = new Promise<UnsubscribedContext>((resolve, _) => {
+    unsubscribeCalled = resolve;
+  })
+
+  let disconnectCalled: any;
+  const dp = new Promise<DisconnectedContext>((resolve, _) => {
+    disconnectCalled = resolve;
+  })
+
+  c.on('disconnected', (ctx) => {
+    disconnectCalled(ctx);
+  })
+
+  const sub = c.newSubscription('test', {
+    getToken: async function (): Promise<string> {
+      throw new UnauthorizedError('');
+    },
+  });
+  sub.on('unsubscribed', (ctx: UnsubscribedContext) => {
+    unsubscribeCalled(ctx);
+  });
+
+  c.connect();
+  sub.subscribe()
+  await c.ready(5000);
+  expect(c.state).toBe(State.Connected);
+
+  const unsubCtx = await up;
+
+  expect(sub.state).toBe(SubscriptionState.Unsubscribed);
+  expect(unsubCtx.code).toBe(unsubscribedCodes.unauthorized)
+
+  c.disconnect();
+  const ctx = await dp;
+  expect(c.state).toBe(State.Disconnected);
+  expect(ctx.code).toBe(disconnectedCodes.disconnectCalled);
+});
+
+test('initializeTransport wraps current transport index instead of going out of bounds', () => {
+  // Neither transport is supported in this environment (no sockjs/webtransport globals
+  // or config provided), so both must be skipped during transport selection.
+  const c = new Centrifuge([
+    {
+      transport: 'sockjs' as TransportName,
+      endpoint: 'http://localhost:8000/connection/sockjs',
+    },
+    {
+      transport: 'webtransport' as TransportName,
+      endpoint: 'http://localhost:8000/connection/webtransport',
+    },
+  ]);
+
+  // Simulate a client which already cycled through transports on a previous
+  // connect attempt and is now resuming from the last index, not index 0.
+  (c as any)._currentTransportIndex = 1;
+  const errors: string[] = [];
+  c.on('error', (ctx) => errors.push(ctx.error.message));
+
+  // Selection runs from a reconnect timer, so no supported transport is reported
+  // instead of thrown.
+  expect(() => { (c as any)._initializeTransport() }).not.toThrow();
+  expect(errors).toEqual(['no supported transport found']);
+  expect((c as any)._transport).toBeNull();
+  expect((c as any)._currentTransportIndex).toBeLessThan(2);
+});
