@@ -59,14 +59,21 @@
 			"history_size": 50,
 			"history_ttl": "86400s",
 			"force_recovery": true,
-			"allow_history_for_client": true
+			"allow_history_for_client": true,
+			"subscribe_proxy_enabled": true,
+			"subscribe_proxy_name": "bff"
 		}
 	],
 	"proxies": [
 		{
 			"name": "bff",
 			"endpoint": "http://bff:3000/centrifugo/subscribe",
-			"timeout": "2s"
+			"timeout": "2s",
+			"http": {
+				"static_headers": {
+					"x-odysseia-proxy": "${CENTRIFUGO_VAR_PROXY_SECRET}"
+				}
+			}
 		}
 	]
 }

@@ -111,12 +111,16 @@ plugin.onPostDelete = async function (params) {
 	const postData = params && params.post;
 	if (!postData || !postData.tid) return;
 	await publish(`topic:${postData.tid}`, { type: 'message.delete', pid: postData.pid });
+	// 软删同步摘索引：否则 R18 帖全文残留 Meili 可被无权者搜到（onPostsPurge 同款范式）
+	search.deletePost(postData.pid);
 };
 
 plugin.onPostRestore = async function (params) {
 	const postData = params && params.post;
 	if (!postData || !postData.tid) return;
 	await publish(`topic:${postData.tid}`, { type: 'message.restore', pid: postData.pid });
+	// 恢复后回索引（postData 含 pid/tid/uid/content/timestamp，与 indexPost 契约一致）
+	search.indexPost(postData);
 };
 
 /** action:posts.purge（注意复数，v4.x 真名）。payload = { posts: [...], uid }（src/posts/delete.js 实证） */

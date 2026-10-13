@@ -3,6 +3,7 @@
   "library": "library.js",
   "hooks": [
     { "hook": "static:app.load", "method": "init" },
-    { "hook": "filter:register.check", "method": "onRegisterCheck" }
+    { "hook": "filter:register.check", "method": "onRegisterCheck" },
+    { "hook": "action:user.create", "method": "onUserCreate" }
   ]
 }

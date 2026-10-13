@@ -30,6 +30,7 @@ const {
 	NODEBB_URL,
 	CENTRIFUGO_CLIENT_TOKEN_HMAC_SECRET_KEY: TOKEN_SECRET,
 	ODYSSEIA_INTERNAL_TOKEN: INTERNAL_TOKEN,
+	ODYSSEIA_PROXY_SECRET: PROXY_SECRET,
 	R2_ENDPOINT,
 	R2_ACCESS_KEY_ID,
 	R2_SECRET_ACCESS_KEY,
@@ -38,7 +39,7 @@ const {
 } = process.env;
 
 const PORT = Number(process.env.PORT || 3000);
-const TOKEN_TTL = '24h';
+const TOKEN_TTL = '2h'; // 短 TTL + 前端 getToken 自动续期（见 chat.js），泄露窗口从 24h 压到 2h
 const PRESIGN_TTL = 900; // 15 分钟
 
 const app = express();
@@ -59,6 +60,7 @@ async function resolveUid(req) {
 	try {
 		const res = await fetch(`${NODEBB_URL}/api/me`, {
 			headers: { cookie: req.headers.cookie || '' },
+			signal: AbortSignal.timeout(1500), // 必须 < Centrifugo proxy timeout（2s），否则订阅回调整体超时
 		});
 		if (!res.ok) return 0;
 		const data = await res.json().catch(() => null);
@@ -76,6 +78,7 @@ async function callNodeBB(path) {
 	try {
 		const res = await fetch(`${NODEBB_URL}${path}`, {
 			headers: { 'x-internal-token': INTERNAL_TOKEN },
+			signal: AbortSignal.timeout(1500),
 		});
 		if (!res.ok) return null;
 		return await res.json();
@@ -110,10 +113,18 @@ app.get('/token', async (req, res) => {
 // ==================================================================
 
 app.post('/centrifugo/subscribe', async (req, res) => {
+	// 第一道防线：Caddy 已不路由 /bff/centrifugo/* 到公网；
+	// 第二道防线（本校验）：仅 Centrifugo proxy 携带 config.json static_headers 注入的
+	// 共享密钥才可调。密钥缺失时 fail-closed（拒绝一切），防内网横向伪造。
+	if (!PROXY_SECRET || req.headers['x-odysseia-proxy'] !== PROXY_SECRET) {
+		return res.status(403).json({ error: 'forbidden' });
+	}
+
 	const body = req.body || {};
 	const channel = String(body.channel || '');
-	// 连接用户身份：来自连接 token 的 sub（Centrifugo 代理请求携带 user 字段）
-	const uid = Number(body.user || req.headers['x-centrifugo-user'] || 0);
+	// 连接用户身份：仅取代理请求体 user 字段（Centrifugo 从连接 token 的 sub 服务端注入，可信）；
+	// 不再回退 x-centrifugo-user 头——该头可被直连方伪造
+	const uid = Number(body.user || 0);
 
 	if (!uid) return res.json({ error: { code: 103, message: 'not authorized' } });
 
@@ -165,9 +176,29 @@ const ALLOWED_TYPES = {
 	'video/mp4': 'mp4',
 };
 
+// 预签名限频：per-uid 内存滑动窗口（10 次/10 分钟），防 R2 key 喷洒与签名成本放大。
+// 单实例内存即可——BFF 无状态单副本部署，重启清零可接受
+const PRESIGN_WINDOW_MS = 10 * 60 * 1000;
+const PRESIGN_MAX = 10;
+const presignHits = new Map(); // uid -> number[]（窗口内时间戳）
+
+function presignAllowed(uid) {
+	const now = Date.now();
+	const hits = (presignHits.get(uid) || []).filter(t => now - t < PRESIGN_WINDOW_MS);
+	if (hits.length >= PRESIGN_MAX) {
+		presignHits.set(uid, hits);
+		return false;
+	}
+	hits.push(now);
+	presignHits.set(uid, hits);
+	if (presignHits.size > 10000) presignHits.clear(); // 防内存膨胀，限频精度可牺牲
+	return true;
+}
+
 app.post('/upload/presign', async (req, res) => {
 	const uid = await resolveUid(req);
 	if (!uid) return res.status(401).json({ error: 'login required' });
+	if (!presignAllowed(uid)) return res.status(429).json({ error: 'too many requests' });
 
 	const { kind, tid, contentType } = req.body || {};
 	const ext = ALLOWED_TYPES[contentType];

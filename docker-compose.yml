@@ -80,6 +80,9 @@ services:
       CENTRIFUGO_HTTP_API_KEY: ${CENTRIFUGO_HTTP_API_KEY}
       CENTRIFUGO_ADMIN_PASSWORD: ${CENTRIFUGO_ADMIN_PASSWORD}
       CENTRIFUGO_ADMIN_SECRET: ${CENTRIFUGO_ADMIN_SECRET}
+      # 订阅代理共享密钥：v6.3+ 以 ${CENTRIFUGO_VAR_*} 插值进 config.json proxies.http.static_headers，
+      # Centrifugo 调 BFF 订阅回调时携带 x-odysseia-proxy 头，BFF 校验后放行（防伪造调用）
+      CENTRIFUGO_VAR_PROXY_SECRET: ${ODYSSEIA_PROXY_SECRET:?请在 .env 设置 ODYSSEIA_PROXY_SECRET}
     volumes:
       - ./centrifugo/config.json:/etc/centrifugo/config.json:ro
     ulimits:
@@ -140,6 +143,7 @@ services:
       NODEBB_URL: http://nodebb:4567
       CENTRIFUGO_CLIENT_TOKEN_HMAC_SECRET_KEY: ${CENTRIFUGO_CLIENT_TOKEN_HMAC_SECRET_KEY}
       ODYSSEIA_INTERNAL_TOKEN: ${ODYSSEIA_INTERNAL_TOKEN}
+      ODYSSEIA_PROXY_SECRET: ${ODYSSEIA_PROXY_SECRET}
       R2_ENDPOINT: ${R2_ENDPOINT}
       R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID}
       R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY}

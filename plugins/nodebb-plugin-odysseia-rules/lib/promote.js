@@ -31,6 +31,7 @@ const POSTCOUNT_KEY = 'users:postcount';
 const BATCH_SIZE = 500;
 
 let running = false;
+let started = false;
 
 // ---------- 单轮巡检 ----------
 
@@ -40,6 +41,8 @@ async function runOnce(getSettings) {
 	try {
 		const settings = await getSettings();
 		const ladder = Array.isArray(settings.ladder) ? settings.ladder : [];
+		const bufferMs = Math.max(0, Number(settings.bufferHours) || 0) * 3600e3;
+		const now = Date.now();
 
 		for (const { group, minPosts } of ladder) {
 			if (!group || !(Number(minPosts) > 0)) continue;
@@ -60,7 +63,14 @@ async function runOnce(getSettings) {
 				if (!uids || !uids.length) break;
 
 				const members = await Groups.isMember(uids, String(group));
-				const toJoin = uids.filter((uid, i) => !members[i] && Number(uid) > 0);
+			let toJoin = uids.filter((uid, i) => !members[i] && Number(uid) > 0);
+
+			// 双条件：postCount 达标之外，还须过 120h 新人缓冲区（joindate + buffer <= now），
+			// 否则机器人注册当天刷帖即跳级，缓冲区形同虚设
+			if (toJoin.length && bufferMs > 0) {
+				const joins = await db.sortedSetScores('users:joindate', toJoin);
+				toJoin = toJoin.filter((uid, i) => Number(joins[i]) > 0 && Number(joins[i]) + bufferMs <= now);
+			}
 
 				for (const uid of toJoin) {
 					try {
@@ -89,6 +99,9 @@ async function runOnce(getSettings) {
 // ---------- 启动 ----------
 
 function start(getSettings) {
+	if (started) return; // 幂等守卫：static:app.load 多次触发时防 cron/setTimeout 重复注册
+	started = true;
+
 	// 启动后延迟 60s 先跑一轮（等 DB / Redis 完全就绪）
 	setTimeout(() => {
 		runOnce(getSettings).catch(() => {});

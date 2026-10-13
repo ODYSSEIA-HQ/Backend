@@ -34,7 +34,11 @@
 	}
 
 	# --- BFF ---
-	handle /bff/* {
+	# 白名单公网路由：仅 token / upload / vendor / healthz 可达。
+	# /bff/centrifugo/* 是 Centrifugo → BFF 的内网订阅回调（带共享密钥头），
+	# 不对公网暴露——否则任何登录用户可伪造 body 探测他人频道权限（越权 oracle）。
+	@bffPublic path /bff/token /bff/upload/* /bff/vendor/* /bff/healthz
+	handle @bffPublic {
 		uri strip_prefix /bff
 		reverse_proxy bff:3000
 	}

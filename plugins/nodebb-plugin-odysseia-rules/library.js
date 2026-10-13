@@ -13,6 +13,7 @@
 
 const db = loadModule('./src/database');
 const meta = loadModule('./src/meta');
+const Groups = loadModule('./src/groups');
 
 const quiz = require('./lib/quiz');
 const promote = require('./lib/promote');
@@ -33,7 +34,7 @@ const plugin = {};
 
 // ---------- 默认制度配置（可被 meta.settings 覆盖） ----------
 const DEFAULTS = {
-	// 答题准入：默认关（题库为空时放行），配置题库后自动生效
+	// 答题准入：默认开；题库为空时放行（冷启动期不拦注册），配置题库后自动生效
 	quizEnabled: true,
 	// 120h 缓冲区（毫秒）
 	bufferHours: 120,
@@ -81,6 +82,23 @@ plugin.onRegisterCheck = async function (payload) {
 	payload.errors = payload.errors || [];
 	payload.errors.push('[[error:odysseia-quiz-not-passed]] 请先完成准入答题');
 	return payload;
+};
+
+// ---------- 新人自动入组（缓冲区权益由新人组承载：限速 / 禁发 R18 等） ----------
+
+plugin.onUserCreate = async function (data) {
+	const uid = data && data.user && Number(data.user.uid);
+	if (!(uid > 0) || !Groups) return;
+
+	try {
+		if (!(await Groups.exists('odysseia-newcomer'))) {
+			console.warn('[odysseia-rules] 新人组 odysseia-newcomer 不存在，跳过自动入组（请在 ACP 创建）');
+			return;
+		}
+		await Groups.join('odysseia-newcomer', uid);
+	} catch (err) {
+		console.error(`[odysseia-rules] 新人入组失败 uid=${uid}`, err.message);
+	}
 };
 
 module.exports = plugin;
