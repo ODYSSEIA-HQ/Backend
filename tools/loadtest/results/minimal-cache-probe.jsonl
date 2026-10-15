@@ -1,0 +1,6 @@
+{"time":"2026-10-15T12:44:38.341Z","status":200,"cache":null,"ms":2423}
+{"time":"2026-10-15T12:44:38.355Z","status":200,"cache":"hit-fresh","ms":5}
+{"time":"2026-10-15T12:50:10.731Z","status":200,"cache":"hit-stale","ms":118}
+{"time":"2026-10-15T12:50:12.029Z","status":200,"cache":"hit-stale","ms":286}
+{"time":"2026-10-15T12:50:13.583Z","status":200,"cache":"hit-stale","ms":553}
+{"time":"2026-10-15T12:50:14.588Z","status":200,"cache":"hit-fresh","ms":4}

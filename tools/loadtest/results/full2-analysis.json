@@ -1,0 +1,725 @@
+{
+  "t0": "2026-10-14T21:47:09.190Z",
+  "metricCounts": {
+    "vus": 481,
+    "vus_max": 481,
+    "ws_sessions": 11530,
+    "ws_connecting": 11530,
+    "ws_msgs_sent": 59613,
+    "ws_msgs_received": 65354,
+    "ws_connected": 11530,
+    "ws_session_duration": 9883,
+    "data_sent": 29254,
+    "data_received": 29254,
+    "iteration_duration": 27577,
+    "iterations": 27577,
+    "ws_subscribe_denied": 408,
+    "dropped_iterations": 21277,
+    "http_reqs": 17724,
+    "http_req_duration": 17724,
+    "http_req_blocked": 17724,
+    "http_req_connecting": 17724,
+    "http_req_tls_handshaking": 17724,
+    "http_req_sending": 17724,
+    "http_req_waiting": 17724,
+    "http_req_receiving": 17724,
+    "http_req_failed": 17724,
+    "checks": 9477,
+    "chat_sent_ok": 9466,
+    "chat_latency_ms": 5741,
+    "chat_received": 5741,
+    "send_errors": 11,
+    "ws_errors": 1
+  },
+  "ws_msgs_total": 65354,
+  "read": {
+    "overall": {
+      "count": 8247,
+      "avg": 579.6,
+      "p50": 121,
+      "p90": 1718.8,
+      "p95": 2695.8,
+      "p99": 4968.2,
+      "max": 13138.4
+    },
+    "byEndpoint": {
+      "category-card": {
+        "count": 5865,
+        "avg": 746.4,
+        "p50": 271.4,
+        "p90": 1995.5,
+        "p95": 3185.9,
+        "p99": 5078.7,
+        "max": 13138.4
+      },
+      "category-parent": {
+        "count": 2382,
+        "avg": 169.1,
+        "p50": 36.3,
+        "p90": 139.6,
+        "p95": 606.4,
+        "p99": 3299.6,
+        "max": 8281
+      }
+    },
+    "slowCount": 2254,
+    "slowTop30": [
+      {
+        "t": "2026-10-14T21:50:48.797585361Z",
+        "ep": "category-card",
+        "dur": 13138,
+        "status": "200",
+        "url": "http://caddy:8090/api/category/2953"
+      },
+      {
+        "t": "2026-10-14T21:50:49.048391182Z",
+        "ep": "category-card",
+        "dur": 13122,
+        "status": "200",
+        "url": "http://caddy:8090/api/category/2733"
+      },
+      {
+        "t": "2026-10-14T21:50:48.797017748Z",
+        "ep": "category-card",
+        "dur": 12938,
+        "status": "200",
+        "url": "http://caddy:8090/api/category/35"
+      },
+      {
+        "t": "2026-10-14T21:50:48.79751796Z",
+        "ep": "category-card",
+        "dur": 12705,
+        "status": "200",
+        "url": "http://caddy:8090/api/category/698"
+      },
+      {
+        "t": "2026-10-14T21:50:48.797677314Z",
+        "ep": "category-card",
+        "dur": 12439,
+        "status": "200",
+        "url": "http://caddy:8090/api/category/1784"
+      },
+      {
+        "t": "2026-10-14T21:50:45.792143646Z",
+        "ep": "category-card",
+        "dur": 10867,
+        "status": "200",
+        "url": "http://caddy:8090/api/category/318"
+      },
+      {
+        "t": "2026-10-14T21:50:49.04864523Z",
+        "ep": "category-card",
+        "dur": 10790,
+        "status": "200",
+        "url": "http://caddy:8090/api/category/2418"
+      },
+      {
+        "t": "2026-10-14T21:50:49.099522677Z",
+        "ep": "category-card",
+        "dur": 10741,
+        "status": "200",
+        "url": "http://caddy:8090/api/category/1694"
+      },
+      {
+        "t": "2026-10-14T21:50:49.355570263Z",
+        "ep": "category-card",
+        "dur": 10663,
+        "status": "200",
+        "url": "http://caddy:8090/api/category/1674"
+      },
+      {
+        "t": "2026-10-14T21:50:49.378878169Z",
+        "ep": "category-card",
+        "dur": 10650,
+        "status": "200",
+        "url": "http://caddy:8090/api/category/1170"
+      },
+      {
+        "t": "2026-10-14T21:50:49.562622044Z",
+        "ep": "category-card",
+        "dur": 10603,
+        "status": "200",
+        "url": "http://caddy:8090/api/category/1080"
+      },
+      {
+        "t": "2026-10-14T21:50:49.648348787Z",
+        "ep": "category-card",
+        "dur": 10256,
+        "status": "200",
+        "url": "http://caddy:8090/api/category/478"
+      },
+      {
+        "t": "2026-10-14T21:50:49.679480987Z",
+        "ep": "category-card",
+        "dur": 10053,
+        "status": "200",
+        "url": "http://caddy:8090/api/category/2970"
+      },
+      {
+        "t": "2026-10-14T21:50:49.818771068Z",
+        "ep": "category-card",
+        "dur": 9693,
+        "status": "200",
+        "url": "http://caddy:8090/api/category/1707"
+      },
+      {
+        "t": "2026-10-14T21:50:48.798114691Z",
+        "ep": "category-card",
+        "dur": 9572,
+        "status": "200",
+        "url": "http://caddy:8090/api/category/915"
+      },
+      {
+        "t": "2026-10-14T21:50:49.924787929Z",
+        "ep": "category-card",
+        "dur": 9399,
+        "status": "200",
+        "url": "http://caddy:8090/api/category/904"
+      },
+      {
+        "t": "2026-10-14T21:52:02.191535637Z",
+        "ep": "category-card",
+        "dur": 9088,
+        "status": "200",
+        "url": "http://caddy:8090/api/category/2141"
+      },
+      {
+        "t": "2026-10-14T21:52:01.967503187Z",
+        "ep": "category-card",
+        "dur": 8997,
+        "status": "200",
+        "url": "http://caddy:8090/api/category/719"
+      },
+      {
+        "t": "2026-10-14T21:52:01.638815293Z",
+        "ep": "category-card",
+        "dur": 8768,
+        "status": "200",
+        "url": "http://caddy:8090/api/category/1541"
+      },
+      {
+        "t": "2026-10-14T21:52:01.139204416Z",
+        "ep": "category-card",
+        "dur": 8468,
+        "status": "200",
+        "url": "http://caddy:8090/api/category/2402"
+      },
+      {
+        "t": "2026-10-14T21:47:17.415245855Z",
+        "ep": "category-parent",
+        "dur": 8281,
+        "status": "200",
+        "url": "http://caddy:8090/api/category/5"
+      },
+      {
+        "t": "2026-10-14T21:47:17.364075735Z",
+        "ep": "category-parent",
+        "dur": 8197,
+        "status": "200",
+        "url": "http://caddy:8090/api/category/5"
+      },
+      {
+        "t": "2026-10-14T21:47:16.723248947Z",
+        "ep": "category-parent",
+        "dur": 7723,
+        "status": "200",
+        "url": "http://caddy:8090/api/category/5"
+      },
+      {
+        "t": "2026-10-14T21:47:16.671174667Z",
+        "ep": "category-parent",
+        "dur": 7638,
+        "status": "200",
+        "url": "http://caddy:8090/api/category/5"
+      },
+      {
+        "t": "2026-10-14T21:50:50.195283163Z",
+        "ep": "category-card",
+        "dur": 7569,
+        "status": "200",
+        "url": "http://caddy:8090/api/category/481"
+      },
+      {
+        "t": "2026-10-14T21:47:17.429527068Z",
+        "ep": "category-parent",
+        "dur": 7463,
+        "status": "200",
+        "url": "http://caddy:8090/api/category/5"
+      },
+      {
+        "t": "2026-10-14T21:47:16.673355502Z",
+        "ep": "category-parent",
+        "dur": 7407,
+        "status": "200",
+        "url": "http://caddy:8090/api/category/5"
+      },
+      {
+        "t": "2026-10-14T21:52:05.585590748Z",
+        "ep": "category-card",
+        "dur": 7348,
+        "status": "200",
+        "url": "http://caddy:8090/api/category/2321"
+      },
+      {
+        "t": "2026-10-14T21:52:06.119207371Z",
+        "ep": "category-card",
+        "dur": 7316,
+        "status": "200",
+        "url": "http://caddy:8090/api/category/1079"
+      },
+      {
+        "t": "2026-10-14T21:52:05.678945059Z",
+        "ep": "category-card",
+        "dur": 7309,
+        "status": "200",
+        "url": "http://caddy:8090/api/category/1993"
+      }
+    ],
+    "timeline10s": [
+      {
+        "bucket": 0,
+        "t": "21:47:09",
+        "n": 90,
+        "max": 8281,
+        "sendN": 117,
+        "sendSlow": 116
+      },
+      {
+        "bucket": 1,
+        "t": "21:47:19",
+        "n": 141,
+        "max": 1753,
+        "sendN": 328,
+        "sendSlow": 275
+      },
+      {
+        "bucket": 2,
+        "t": "21:47:29",
+        "n": 43,
+        "max": 1661,
+        "sendN": 509,
+        "sendSlow": 311
+      },
+      {
+        "bucket": 3,
+        "t": "21:47:39",
+        "n": 77,
+        "max": 1567,
+        "sendN": 478,
+        "sendSlow": 260
+      },
+      {
+        "bucket": 4,
+        "t": "21:47:49",
+        "n": 89,
+        "max": 2605,
+        "sendN": 333,
+        "sendSlow": 237
+      },
+      {
+        "bucket": 5,
+        "t": "21:47:59",
+        "n": 132,
+        "max": 2232,
+        "sendN": 340,
+        "sendSlow": 316
+      },
+      {
+        "bucket": 6,
+        "t": "21:48:09",
+        "n": 50,
+        "max": 2390,
+        "sendN": 501,
+        "sendSlow": 392
+      },
+      {
+        "bucket": 7,
+        "t": "21:48:19",
+        "n": 111,
+        "max": 5281,
+        "sendN": 228,
+        "sendSlow": 123
+      },
+      {
+        "bucket": 8,
+        "t": "21:48:29",
+        "n": 80,
+        "max": 4562,
+        "sendN": 305,
+        "sendSlow": 246
+      },
+      {
+        "bucket": 9,
+        "t": "21:48:39",
+        "n": 76,
+        "max": 2181,
+        "sendN": 331,
+        "sendSlow": 279
+      },
+      {
+        "bucket": 10,
+        "t": "21:48:49",
+        "n": 77,
+        "max": 1816,
+        "sendN": 448,
+        "sendSlow": 352
+      },
+      {
+        "bucket": 11,
+        "t": "21:48:59",
+        "n": 99,
+        "max": 1459,
+        "sendN": 495,
+        "sendSlow": 322
+      },
+      {
+        "bucket": 12,
+        "t": "21:49:09",
+        "n": 97,
+        "max": 3858,
+        "sendN": 292,
+        "sendSlow": 198
+      },
+      {
+        "bucket": 13,
+        "t": "21:49:19",
+        "n": 70,
+        "max": 5079,
+        "sendN": 254,
+        "sendSlow": 161
+      },
+      {
+        "bucket": 14,
+        "t": "21:49:29",
+        "n": 93,
+        "max": 5185,
+        "sendN": 359,
+        "sendSlow": 176
+      },
+      {
+        "bucket": 15,
+        "t": "21:49:39",
+        "n": 40,
+        "max": 2688,
+        "sendN": 410,
+        "sendSlow": 168
+      },
+      {
+        "bucket": 16,
+        "t": "21:49:49",
+        "n": 43,
+        "max": 2803,
+        "sendN": 379,
+        "sendSlow": 121
+      },
+      {
+        "bucket": 17,
+        "t": "21:49:59",
+        "n": 61,
+        "max": 4366,
+        "sendN": 226,
+        "sendSlow": 145
+      },
+      {
+        "bucket": 18,
+        "t": "21:50:09",
+        "n": 65,
+        "max": 5892,
+        "sendN": 168,
+        "sendSlow": 104
+      },
+      {
+        "bucket": 19,
+        "t": "21:50:19",
+        "n": 39,
+        "max": 4257,
+        "sendN": 238,
+        "sendSlow": 95
+      },
+      {
+        "bucket": 20,
+        "t": "21:50:29",
+        "n": 93,
+        "max": 4354,
+        "sendN": 153,
+        "sendSlow": 116
+      },
+      {
+        "bucket": 21,
+        "t": "21:50:39",
+        "n": 55,
+        "max": 13138,
+        "sendN": 190,
+        "sendSlow": 136
+      },
+      {
+        "bucket": 22,
+        "t": "21:50:49",
+        "n": 68,
+        "max": 10663,
+        "sendN": 238,
+        "sendSlow": 157
+      },
+      {
+        "bucket": 23,
+        "t": "21:50:59",
+        "n": 76,
+        "max": 2684,
+        "sendN": 339,
+        "sendSlow": 227
+      },
+      {
+        "bucket": 24,
+        "t": "21:51:09",
+        "n": 57,
+        "max": 2080,
+        "sendN": 364,
+        "sendSlow": 227
+      },
+      {
+        "bucket": 25,
+        "t": "21:51:19",
+        "n": 27,
+        "max": 2724,
+        "sendN": 412,
+        "sendSlow": 193
+      },
+      {
+        "bucket": 26,
+        "t": "21:51:29",
+        "n": 40,
+        "max": 2475,
+        "sendN": 398,
+        "sendSlow": 214
+      },
+      {
+        "bucket": 27,
+        "t": "21:51:39",
+        "n": 116,
+        "max": 5157,
+        "sendN": 188,
+        "sendSlow": 142
+      },
+      {
+        "bucket": 28,
+        "t": "21:51:49",
+        "n": 74,
+        "max": 4289,
+        "sendN": 269,
+        "sendSlow": 178
+      },
+      {
+        "bucket": 29,
+        "t": "21:51:59",
+        "n": 65,
+        "max": 9088,
+        "sendN": 139,
+        "sendSlow": 113
+      },
+      {
+        "bucket": 30,
+        "t": "21:52:09",
+        "n": 10,
+        "max": 2823,
+        "sendN": 48,
+        "sendSlow": 48
+      }
+    ]
+  },
+  "send": {
+    "overall": {
+      "count": 9477,
+      "avg": 1889.8,
+      "p50": 864.1,
+      "p90": 4887.3,
+      "p95": 6621.6,
+      "p99": 10719.1,
+      "max": 16182
+    },
+    "hist": {
+      "lt500": 3329,
+      "b500_1s": 1810,
+      "b1_2s": 1435,
+      "b2_4s": 1315,
+      "gte4s": 1588
+    },
+    "slow2sCount": 2903,
+    "slowTop20": [
+      {
+        "t": "2026-10-14T21:50:51.168654102Z",
+        "dur": 16182,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:50:50.43433684Z",
+        "dur": 15904,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:50:50.253888785Z",
+        "dur": 15856,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:50:51.088005172Z",
+        "dur": 15760,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:50:50.858875723Z",
+        "dur": 15582,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:50:51.137529194Z",
+        "dur": 15402,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:50:51.539226485Z",
+        "dur": 15012,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:50:48.509983001Z",
+        "dur": 14928,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:52:06.517143747Z",
+        "dur": 14220,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:52:06.868390898Z",
+        "dur": 14123,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:52:06.798310614Z",
+        "dur": 14093,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:52:06.799129913Z",
+        "dur": 14064,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:50:51.394721687Z",
+        "dur": 13848,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:52:09.073663798Z",
+        "dur": 13709,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:52:05.776389425Z",
+        "dur": 13690,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:52:05.894155969Z",
+        "dur": 13688,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:52:05.447309396Z",
+        "dur": 13570,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:52:05.527728515Z",
+        "dur": 13532,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:52:05.867182944Z",
+        "dur": 13430,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:52:05.494715684Z",
+        "dur": 13389,
+        "status": "200"
+      }
+    ],
+    "failed": [
+      {
+        "t": "2026-10-14T21:47:38.881922315Z",
+        "status": "403",
+        "url": "http://caddy:8090/api/v3/chats/4"
+      },
+      {
+        "t": "2026-10-14T21:47:57.244691231Z",
+        "status": "403",
+        "url": "http://caddy:8090/api/v3/chats/4"
+      },
+      {
+        "t": "2026-10-14T21:48:08.842866438Z",
+        "status": "403",
+        "url": "http://caddy:8090/api/v3/chats/2"
+      },
+      {
+        "t": "2026-10-14T21:48:13.393730281Z",
+        "status": "403",
+        "url": "http://caddy:8090/api/v3/chats/2"
+      },
+      {
+        "t": "2026-10-14T21:48:30.185029608Z",
+        "status": "403",
+        "url": "http://caddy:8090/api/v3/chats/2"
+      },
+      {
+        "t": "2026-10-14T21:49:18.954425208Z",
+        "status": "403",
+        "url": "http://caddy:8090/api/v3/chats/2"
+      },
+      {
+        "t": "2026-10-14T21:49:22.062219549Z",
+        "status": "403",
+        "url": "http://caddy:8090/api/v3/chats/2"
+      },
+      {
+        "t": "2026-10-14T21:49:49.830287104Z",
+        "status": "403",
+        "url": "http://caddy:8090/api/v3/chats/5"
+      },
+      {
+        "t": "2026-10-14T21:50:30.174591968Z",
+        "status": "403",
+        "url": "http://caddy:8090/api/v3/chats/5"
+      },
+      {
+        "t": "2026-10-14T21:50:38.896634143Z",
+        "status": "403",
+        "url": "http://caddy:8090/api/v3/chats/2"
+      },
+      {
+        "t": "2026-10-14T21:51:37.026467335Z",
+        "status": "403",
+        "url": "http://caddy:8090/api/v3/chats/5"
+      }
+    ]
+  },
+  "chat": {
+    "overall": {
+      "count": 5741,
+      "avg": 1959.7,
+      "p50": 894,
+      "p90": 5047,
+      "p95": 6792,
+      "p99": 11575,
+      "max": 16414
+    },
+    "hist": {
+      "lt100": 272,
+      "b100_500": 1665,
+      "b500_1s": 1130,
+      "b1_2s": 878,
+      "gte2s": 1796
+    }
+  }
+}

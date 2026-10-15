@@ -204,6 +204,10 @@ static/lib/decor.js（前端渲染器）
 | Patch | 位置 | 理由 |
 |---|---|---|
 | `trust_proxy` 布尔化 | `nodebb/upstream/NodeBB/src/install.js`（envConfMap 增 `NODEBB_TRUST_PROXY`）+ 消费点 `raw === 'true' ? true : raw === 'false' ? false : raw` | env 全是字符串，原样落 `config.json` 会被当主机名解析；反代（Caddy/CF）后 `req.ip` 依赖 `trust_proxy`。compose 注入 `NODEBB_TRUST_PROXY: "true"` |
+| 聊天限速按需判断身份 | `nodebb/upstream/NodeBB/src/api/chats.js` 的 `rateLimitExceeded` | 两种冷却时间均已过或延迟相同时不查身份；声望达标时不扫描分类管理权限。需要区分身份时仍实时查权限，保留原限速及房间权限校验。该内部函数没有可替换 hook，使用局部补丁避免 monkey patch。无新增配置；升级用 `node --test tools/tests/hot-paths.test.cjs` 验证。 |
+| Redis adapter 定向响应 | `nodebb/upstream/NodeBB/src/database/redis.js` 的 `socketAdapter` | 启用已有 `publishOnSpecificResponseChannel` 选项，跨 worker 查询响应仅发送给请求方，避免所有 worker 重复处理。保留实时查询语义，无权限缓存；初始化处没有配置 hook。升级需重验跨 worker 原生消息及容量。 |
+
+现有压测分支还包含 `src/webserver.js` 的 HTTP 超时补丁：keepAliveTimeout=75s、headersTimeout=85s，用于减少 Caddy 复用连接时的 reset；升级 NodeBB 时也需重新验证。
 
 新增 core patch 的规矩：动 `src/` 前先确认插件 hook 无法达成；落 patch 必须同步本表 + compose env 注释；上游跟进新版本时逐条重验。
 
@@ -247,7 +251,11 @@ sub.subscribe();
 
 ## 冒烟测试
 
-业务链路冒烟脚本 `smoke.ps1`（仓库外，PowerShell 5.1）覆盖 20 项：登录 → 建号 → 发帖 → Meili 索引增长 → slowmode 两帖（放行+拦截）→ 删帖摘索引 → 游客 404 → 恢复回索引 → 搜索页 → Centrifugo publish 凭证。本地演示栈改代码后跑一遍，全绿才允许提交。
+业务链路冒烟脚本 `scripts/smoke.ps1`（Windows PowerShell 5.1）覆盖 20 项：登录 → 建号 → 发帖 → Meili 索引增长 → slowmode 两帖（放行+拦截）→ 删帖摘索引 → 游客 404 → 恢复回索引 → 搜索页 → Centrifugo publish 凭证。本地演示栈改代码后跑一遍，全绿才允许提交。
+
+全链路压测流程见 `tools/loadtest/RUNBOOK.md`。Caddy 的公网入口和内网 `:8090` 共用 `nodebb_cluster`：分类 API 使用 URI hash 对齐各 worker 的本地缓存，其余请求轮询。压测种子含用户 Bearer token，仅保留本地，不入库。
+
+最新成员关系修复和原生通知验证见 `tools/loadtest/MEMBERSHIP-NATIVE-2026-10-15.md`。原生通知开启后的完整规模仍未达到聊天 P95 < 500ms，不能把关闭通知时的成绩当作全功能容量承诺。
 
 ## 容量口径（50 万注册用户）
 

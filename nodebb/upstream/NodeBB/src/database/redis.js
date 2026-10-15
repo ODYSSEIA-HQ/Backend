@@ -111,6 +111,8 @@ redisModule.socketAdapter = async function () {
 	]);
 	return redisAdapter(pub, sub, {
 		key: `db:${nconf.get('redis:database')}:adapter_key`,
+		// RPC replies only concern the requesting worker; avoid cluster-wide fanout.
+		publishOnSpecificResponseChannel: true,
 	});
 };
 

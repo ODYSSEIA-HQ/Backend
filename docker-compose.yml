@@ -70,6 +70,11 @@ services:
       # 反代场景必需：信任 Caddy 的 X-Forwarded-For，否则限流/日志全记成 Caddy IP
       # （vendor patch：install.js envConfMap 的 NODEBB_TRUST_PROXY → config.json trust_proxy 布尔）
       NODEBB_TRUST_PROXY: "true"
+      # 多 worker 共用容器预算；V8 默认上限按单进程估算，不能乘 worker 数直接使用。
+      # 本机压测通过 .env 显式预算，生产按插件/worker 数和可用内存配置。
+      NODE_OPTIONS: ${NODEBB_NODE_OPTIONS:-}
+      # vendor patch: src/api/chats.js 按需检查新人限速身份，沿用原配置，无额外开关。
+      # vendor patch: src/database/redis.js 启用 adapter 定向 RPC 响应，无额外开关。
       # secret 无需环境变量：setup 自动生成并写入 config.json
       # ---- 桥接插件读取 ----
       CENTRIFUGO_API_URL: http://centrifugo:8000/api
@@ -78,6 +83,16 @@ services:
       MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:?请在 .env 设置 MEILI_MASTER_KEY}
       # 制度插件读取（内部通信 token）
       ODYSSEIA_INTERNAL_TOKEN: ${ODYSSEIA_INTERNAL_TOKEN:?请在 .env 设置 ODYSSEIA_INTERNAL_TOKEN}
+      # 桥接插件全局 API 限频上限（默认 60 req/10s/IP；压测床在 .env 调高，prod 保持默认）
+      ODYSSEIA_API_RATE_MAX: ${ODYSSEIA_API_RATE_MAX:-60}
+      # 1 = 现有压测模式，仅桥接广播；0 = 同时保留 NodeBB 原生聊天通知。
+      ODYSSEIA_DISABLE_NATIVE_CHAT_NOTIFY: ${ODYSSEIA_DISABLE_NATIVE_CHAT_NOTIFY:-1}
+      # 分类目录缓存参数（full3 诊断定案）：
+      # TTL 默认 60s < 3000 cid 均匀访问的重访间隔 133s → 缓存形同虚设；
+      # 300s 使重访变 fresh 命中（probe 实测 miss 69ms vs hit 2-3ms），read 路径 CPU+db 双减
+      ODYSSEIA_CATEGORY_CACHE_TTL_MS: ${ODYSSEIA_CATEGORY_CACHE_TTL_MS:-300000}
+      # 容量护栏：原 2000 < 3000 cid 全量常驻需 ≥3000，取 4000 留余量
+      ODYSSEIA_CATEGORY_CACHE_MAX: ${ODYSSEIA_CATEGORY_CACHE_MAX:-4000}
     volumes:
       # 官方镜像 VOLUME 声明：本体在 /usr/src/app/（不含 nodebb/ 子目录）
       - nodebb_uploads:/usr/src/app/public/uploads
@@ -198,7 +213,7 @@ services:
       context: ./bff
     restart: unless-stopped
     environment:
-      NODEBB_URL: http://nodebb:4567
+      NODEBB_URL: http://caddy:8090 # cluster LB（round_robin 12 worker），见 caddy/Caddyfile :8090 块
       CENTRIFUGO_CLIENT_TOKEN_HMAC_SECRET_KEY: ${CENTRIFUGO_CLIENT_TOKEN_HMAC_SECRET_KEY:?请在 .env 设置 CENTRIFUGO_CLIENT_TOKEN_HMAC_SECRET_KEY}
       ODYSSEIA_INTERNAL_TOKEN: ${ODYSSEIA_INTERNAL_TOKEN:?请在 .env 设置 ODYSSEIA_INTERNAL_TOKEN}
       ODYSSEIA_PROXY_SECRET: ${ODYSSEIA_PROXY_SECRET:?请在 .env 设置 ODYSSEIA_PROXY_SECRET}

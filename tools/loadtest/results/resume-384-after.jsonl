@@ -1,0 +1,2 @@
+{"utc":"2026-10-15T10:33:29.8550386Z","phase":"after-load","stats":{"BlockIO":"119kB / 16MB","CPUPerc":"3.40%","Container":"odysseia-nodebb-1","ID":"32acecdcd1f3","MemPerc":"46.33%","MemUsage":"3.706GiB / 8GiB","Name":"odysseia-nodebb-1","NetIO":"961MB / 5.65GB","PIDs":"193"}}
+{"utc":"2026-10-15T10:34:20.7045471Z","phase":"after-smoke","stats":{"BlockIO":"119kB / 16MB","CPUPerc":"46.61%","Container":"odysseia-nodebb-1","ID":"32acecdcd1f3","MemPerc":"41.03%","MemUsage":"3.282GiB / 8GiB","Name":"odysseia-nodebb-1","NetIO":"973MB / 5.65GB","PIDs":"193"}}

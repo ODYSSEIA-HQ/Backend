@@ -1,0 +1,677 @@
+{
+  "read": {
+    "all": {
+      "n": 8707,
+      "med": 97.8,
+      "p90": 935.5,
+      "p95": 1500.4,
+      "max": 7901.2
+    },
+    "parent": {
+      "n": 2632,
+      "med": 26.4,
+      "p90": 83.6,
+      "p95": 408.4,
+      "max": 7901.2
+    },
+    "card": {
+      "n": 6075,
+      "med": 175.7,
+      "p90": 1116,
+      "p95": 1762.7,
+      "max": 5895.9
+    }
+  },
+  "readSlowTop30": [
+    {
+      "ms": 7901,
+      "ep": "category-parent",
+      "cid": "http://caddy:8090/api/category/5",
+      "t": "2026-10-15T05:38:02.020650907Z"
+    },
+    {
+      "ms": 7674,
+      "ep": "category-parent",
+      "cid": "http://caddy:8090/api/category/5",
+      "t": "2026-10-15T05:38:01.959947802Z"
+    },
+    {
+      "ms": 6808,
+      "ep": "category-parent",
+      "cid": "http://caddy:8090/api/category/5",
+      "t": "2026-10-15T05:38:05.259903387Z"
+    },
+    {
+      "ms": 6719,
+      "ep": "category-parent",
+      "cid": "http://caddy:8090/api/category/5",
+      "t": "2026-10-15T05:38:01.072707749Z"
+    },
+    {
+      "ms": 6696,
+      "ep": "category-parent",
+      "cid": "http://caddy:8090/api/category/5",
+      "t": "2026-10-15T05:38:00.848578912Z"
+    },
+    {
+      "ms": 6374,
+      "ep": "category-parent",
+      "cid": "http://caddy:8090/api/category/5",
+      "t": "2026-10-15T05:38:02.294364051Z"
+    },
+    {
+      "ms": 5974,
+      "ep": "category-parent",
+      "cid": "http://caddy:8090/api/category/5",
+      "t": "2026-10-15T05:38:00.301317528Z"
+    },
+    {
+      "ms": 5932,
+      "ep": "category-parent",
+      "cid": "http://caddy:8090/api/category/5",
+      "t": "2026-10-15T05:38:00.451863098Z"
+    },
+    {
+      "ms": 5896,
+      "ep": "category-card",
+      "cid": "http://caddy:8090/api/category/491",
+      "t": "2026-10-15T05:38:00.918491444Z"
+    },
+    {
+      "ms": 5718,
+      "ep": "category-card",
+      "cid": "http://caddy:8090/api/category/2766",
+      "t": "2026-10-15T05:41:25.897617716Z"
+    },
+    {
+      "ms": 5707,
+      "ep": "category-card",
+      "cid": "http://caddy:8090/api/category/2483",
+      "t": "2026-10-15T05:41:24.819329895Z"
+    },
+    {
+      "ms": 5701,
+      "ep": "category-card",
+      "cid": "http://caddy:8090/api/category/385",
+      "t": "2026-10-15T05:41:24.680980587Z"
+    },
+    {
+      "ms": 5659,
+      "ep": "category-parent",
+      "cid": "http://caddy:8090/api/category/5",
+      "t": "2026-10-15T05:38:00.379064781Z"
+    },
+    {
+      "ms": 5607,
+      "ep": "category-card",
+      "cid": "http://caddy:8090/api/category/17",
+      "t": "2026-10-15T05:42:30.554557769Z"
+    },
+    {
+      "ms": 5596,
+      "ep": "category-parent",
+      "cid": "http://caddy:8090/api/category/5",
+      "t": "2026-10-15T05:38:02.215000453Z"
+    },
+    {
+      "ms": 5585,
+      "ep": "category-card",
+      "cid": "http://caddy:8090/api/category/570",
+      "t": "2026-10-15T05:41:25.89758062Z"
+    },
+    {
+      "ms": 5576,
+      "ep": "category-parent",
+      "cid": "http://caddy:8090/api/category/5",
+      "t": "2026-10-15T05:38:01.961905621Z"
+    },
+    {
+      "ms": 5554,
+      "ep": "category-card",
+      "cid": "http://caddy:8090/api/category/470",
+      "t": "2026-10-15T05:41:22.666340043Z"
+    },
+    {
+      "ms": 5426,
+      "ep": "category-card",
+      "cid": "http://caddy:8090/api/category/1312",
+      "t": "2026-10-15T05:41:25.507361141Z"
+    },
+    {
+      "ms": 5309,
+      "ep": "category-card",
+      "cid": "http://caddy:8090/api/category/1336",
+      "t": "2026-10-15T05:42:30.554976058Z"
+    },
+    {
+      "ms": 5026,
+      "ep": "category-parent",
+      "cid": "http://caddy:8090/api/category/5",
+      "t": "2026-10-15T05:38:02.879158192Z"
+    },
+    {
+      "ms": 4860,
+      "ep": "category-parent",
+      "cid": "http://caddy:8090/api/category/5",
+      "t": "2026-10-15T05:38:00.379939671Z"
+    },
+    {
+      "ms": 4708,
+      "ep": "category-card",
+      "cid": "http://caddy:8090/api/category/2005",
+      "t": "2026-10-15T05:42:30.555046551Z"
+    },
+    {
+      "ms": 4509,
+      "ep": "category-card",
+      "cid": "http://caddy:8090/api/category/926",
+      "t": "2026-10-15T05:42:30.321478308Z"
+    },
+    {
+      "ms": 4450,
+      "ep": "category-card",
+      "cid": "http://caddy:8090/api/category/1223",
+      "t": "2026-10-15T05:38:05.402044848Z"
+    },
+    {
+      "ms": 4421,
+      "ep": "category-card",
+      "cid": "http://caddy:8090/api/category/2346",
+      "t": "2026-10-15T05:40:12.253626465Z"
+    },
+    {
+      "ms": 4334,
+      "ep": "category-card",
+      "cid": "http://caddy:8090/api/category/1706",
+      "t": "2026-10-15T05:38:05.52021745Z"
+    },
+    {
+      "ms": 4325,
+      "ep": "category-card",
+      "cid": "http://caddy:8090/api/category/1627",
+      "t": "2026-10-15T05:41:22.671129004Z"
+    },
+    {
+      "ms": 4277,
+      "ep": "category-card",
+      "cid": "http://caddy:8090/api/category/2845",
+      "t": "2026-10-15T05:38:00.729555333Z"
+    },
+    {
+      "ms": 4192,
+      "ep": "category-card",
+      "cid": "http://caddy:8090/api/category/1956",
+      "t": "2026-10-15T05:42:30.372449916Z"
+    }
+  ],
+  "send": {
+    "stats": {
+      "n": 20078,
+      "med": 458.8,
+      "p90": 2294,
+      "p95": 3148.9,
+      "max": 8782.1
+    },
+    "failed": 21,
+    "hist": {
+      "1000-2000": 2664,
+      "500-1000": 4350,
+      "<500": 10629,
+      "2000-4000": 1851,
+      "≥4000": 584
+    },
+    "slowTop30": [
+      {
+        "ms": 8782,
+        "status": "200",
+        "t": "2026-10-15T05:41:27.60894023Z"
+      },
+      {
+        "ms": 8740,
+        "status": "200",
+        "t": "2026-10-15T05:41:25.939360385Z"
+      },
+      {
+        "ms": 8665,
+        "status": "200",
+        "t": "2026-10-15T05:41:27.26175713Z"
+      },
+      {
+        "ms": 8578,
+        "status": "200",
+        "t": "2026-10-15T05:41:28.012434836Z"
+      },
+      {
+        "ms": 8548,
+        "status": "200",
+        "t": "2026-10-15T05:41:26.492699104Z"
+      },
+      {
+        "ms": 8466,
+        "status": "200",
+        "t": "2026-10-15T05:41:27.171029216Z"
+      },
+      {
+        "ms": 8449,
+        "status": "200",
+        "t": "2026-10-15T05:41:27.811295908Z"
+      },
+      {
+        "ms": 8419,
+        "status": "200",
+        "t": "2026-10-15T05:42:33.79080528Z"
+      },
+      {
+        "ms": 8400,
+        "status": "200",
+        "t": "2026-10-15T05:41:26.491732388Z"
+      },
+      {
+        "ms": 8374,
+        "status": "200",
+        "t": "2026-10-15T05:42:33.405348124Z"
+      },
+      {
+        "ms": 8342,
+        "status": "200",
+        "t": "2026-10-15T05:42:34.253985794Z"
+      },
+      {
+        "ms": 8315,
+        "status": "200",
+        "t": "2026-10-15T05:42:33.405348303Z"
+      },
+      {
+        "ms": 8270,
+        "status": "200",
+        "t": "2026-10-15T05:42:33.695261409Z"
+      },
+      {
+        "ms": 8257,
+        "status": "200",
+        "t": "2026-10-15T05:41:26.893528231Z"
+      },
+      {
+        "ms": 8213,
+        "status": "200",
+        "t": "2026-10-15T05:41:26.23628143Z"
+      },
+      {
+        "ms": 8210,
+        "status": "200",
+        "t": "2026-10-15T05:42:33.720926306Z"
+      },
+      {
+        "ms": 8087,
+        "status": "200",
+        "t": "2026-10-15T05:41:25.98166786Z"
+      },
+      {
+        "ms": 8049,
+        "status": "200",
+        "t": "2026-10-15T05:42:34.020629932Z"
+      },
+      {
+        "ms": 7986,
+        "status": "200",
+        "t": "2026-10-15T05:42:33.720970424Z"
+      },
+      {
+        "ms": 7946,
+        "status": "200",
+        "t": "2026-10-15T05:41:27.920605861Z"
+      },
+      {
+        "ms": 7945,
+        "status": "200",
+        "t": "2026-10-15T05:41:26.49042064Z"
+      },
+      {
+        "ms": 7922,
+        "status": "200",
+        "t": "2026-10-15T05:42:33.5634933Z"
+      },
+      {
+        "ms": 7896,
+        "status": "200",
+        "t": "2026-10-15T05:41:27.921149093Z"
+      },
+      {
+        "ms": 7859,
+        "status": "200",
+        "t": "2026-10-15T05:41:25.552651213Z"
+      },
+      {
+        "ms": 7834,
+        "status": "200",
+        "t": "2026-10-15T05:41:25.457435269Z"
+      },
+      {
+        "ms": 7794,
+        "status": "200",
+        "t": "2026-10-15T05:41:26.16859291Z"
+      },
+      {
+        "ms": 7722,
+        "status": "200",
+        "t": "2026-10-15T05:41:25.506057074Z"
+      },
+      {
+        "ms": 7686,
+        "status": "200",
+        "t": "2026-10-15T05:41:25.864460229Z"
+      },
+      {
+        "ms": 7579,
+        "status": "200",
+        "t": "2026-10-15T05:41:26.116358116Z"
+      },
+      {
+        "ms": 7571,
+        "status": "200",
+        "t": "2026-10-15T05:42:34.095022559Z"
+      }
+    ]
+  },
+  "chat": {
+    "stats": {
+      "n": 11997,
+      "med": 460,
+      "p90": 2325,
+      "p95": 3160,
+      "max": 8716
+    },
+    "hist": {
+      "1000-2000": 1524,
+      "500-1000": 2661,
+      "100-500": 5741,
+      "≥2000": 1489,
+      "<100": 582
+    }
+  },
+  "ws": {
+    "msgsReceived": 71457,
+    "subscribeDenied": 215
+  },
+  "timeline": [
+    {
+      "t": 1792042670,
+      "readN": 37,
+      "readSlow": 28,
+      "readMed": 1563,
+      "sendN": 54,
+      "sendSlow": 48,
+      "sendMed": 1916
+    },
+    {
+      "t": 1792042680,
+      "readN": 307,
+      "readSlow": 93,
+      "readMed": 818,
+      "sendN": 556,
+      "sendSlow": 218,
+      "sendMed": 1284
+    },
+    {
+      "t": 1792042690,
+      "readN": 295,
+      "readSlow": 18,
+      "readMed": 155,
+      "sendN": 769,
+      "sendSlow": 143,
+      "sendMed": 742
+    },
+    {
+      "t": 1792042700,
+      "readN": 300,
+      "readSlow": 25,
+      "readMed": 260,
+      "sendN": 632,
+      "sendSlow": 125,
+      "sendMed": 979
+    },
+    {
+      "t": 1792042710,
+      "readN": 303,
+      "readSlow": 37,
+      "readMed": 274,
+      "sendN": 680,
+      "sendSlow": 271,
+      "sendMed": 923
+    },
+    {
+      "t": 1792042720,
+      "readN": 296,
+      "readSlow": 26,
+      "readMed": 226,
+      "sendN": 717,
+      "sendSlow": 397,
+      "sendMed": 820
+    },
+    {
+      "t": 1792042730,
+      "readN": 293,
+      "readSlow": 25,
+      "readMed": 179,
+      "sendN": 854,
+      "sendSlow": 377,
+      "sendMed": 665
+    },
+    {
+      "t": 1792042740,
+      "readN": 297,
+      "readSlow": 84,
+      "readMed": 507,
+      "sendN": 466,
+      "sendSlow": 269,
+      "sendMed": 1209
+    },
+    {
+      "t": 1792042750,
+      "readN": 301,
+      "readSlow": 39,
+      "readMed": 231,
+      "sendN": 864,
+      "sendSlow": 263,
+      "sendMed": 699
+    },
+    {
+      "t": 1792042760,
+      "readN": 301,
+      "readSlow": 31,
+      "readMed": 231,
+      "sendN": 765,
+      "sendSlow": 339,
+      "sendMed": 766
+    },
+    {
+      "t": 1792042770,
+      "readN": 299,
+      "readSlow": 28,
+      "readMed": 180,
+      "sendN": 783,
+      "sendSlow": 325,
+      "sendMed": 749
+    },
+    {
+      "t": 1792042780,
+      "readN": 302,
+      "readSlow": 33,
+      "readMed": 210,
+      "sendN": 871,
+      "sendSlow": 470,
+      "sendMed": 690
+    },
+    {
+      "t": 1792042790,
+      "readN": 299,
+      "readSlow": 28,
+      "readMed": 213,
+      "sendN": 873,
+      "sendSlow": 514,
+      "sendMed": 650
+    },
+    {
+      "t": 1792042800,
+      "readN": 276,
+      "readSlow": 44,
+      "readMed": 312,
+      "sendN": 685,
+      "sendSlow": 333,
+      "sendMed": 770
+    },
+    {
+      "t": 1792042810,
+      "readN": 295,
+      "readSlow": 93,
+      "readMed": 611,
+      "sendN": 548,
+      "sendSlow": 255,
+      "sendMed": 1132
+    },
+    {
+      "t": 1792042820,
+      "readN": 302,
+      "readSlow": 73,
+      "readMed": 294,
+      "sendN": 706,
+      "sendSlow": 469,
+      "sendMed": 857
+    },
+    {
+      "t": 1792042830,
+      "readN": 303,
+      "readSlow": 37,
+      "readMed": 203,
+      "sendN": 770,
+      "sendSlow": 434,
+      "sendMed": 726
+    },
+    {
+      "t": 1792042840,
+      "readN": 300,
+      "readSlow": 46,
+      "readMed": 191,
+      "sendN": 819,
+      "sendSlow": 289,
+      "sendMed": 722
+    },
+    {
+      "t": 1792042850,
+      "readN": 295,
+      "readSlow": 39,
+      "readMed": 175,
+      "sendN": 811,
+      "sendSlow": 371,
+      "sendMed": 724
+    },
+    {
+      "t": 1792042860,
+      "readN": 302,
+      "readSlow": 52,
+      "readMed": 250,
+      "sendN": 767,
+      "sendSlow": 407,
+      "sendMed": 736
+    },
+    {
+      "t": 1792042870,
+      "readN": 252,
+      "readSlow": 68,
+      "readMed": 545,
+      "sendN": 514,
+      "sendSlow": 294,
+      "sendMed": 1084
+    },
+    {
+      "t": 1792042880,
+      "readN": 254,
+      "readSlow": 86,
+      "readMed": 845,
+      "sendN": 347,
+      "sendSlow": 208,
+      "sendMed": 1763
+    },
+    {
+      "t": 1792042890,
+      "readN": 304,
+      "readSlow": 63,
+      "readMed": 262,
+      "sendN": 611,
+      "sendSlow": 300,
+      "sendMed": 985
+    },
+    {
+      "t": 1792042900,
+      "readN": 300,
+      "readSlow": 37,
+      "readMed": 249,
+      "sendN": 712,
+      "sendSlow": 380,
+      "sendMed": 831
+    },
+    {
+      "t": 1792042910,
+      "readN": 288,
+      "readSlow": 45,
+      "readMed": 237,
+      "sendN": 657,
+      "sendSlow": 385,
+      "sendMed": 857
+    },
+    {
+      "t": 1792042920,
+      "readN": 311,
+      "readSlow": 58,
+      "readMed": 305,
+      "sendN": 725,
+      "sendSlow": 388,
+      "sendMed": 853
+    },
+    {
+      "t": 1792042930,
+      "readN": 297,
+      "readSlow": 60,
+      "readMed": 336,
+      "sendN": 631,
+      "sendSlow": 295,
+      "sendMed": 886
+    },
+    {
+      "t": 1792042940,
+      "readN": 233,
+      "readSlow": 76,
+      "readMed": 683,
+      "sendN": 384,
+      "sendSlow": 225,
+      "sendMed": 1266
+    },
+    {
+      "t": 1792042950,
+      "readN": 314,
+      "readSlow": 73,
+      "readMed": 495,
+      "sendN": 550,
+      "sendSlow": 220,
+      "sendMed": 1256
+    },
+    {
+      "t": 1792042960,
+      "readN": 303,
+      "readSlow": 47,
+      "readMed": 290,
+      "sendN": 632,
+      "sendSlow": 286,
+      "sendMed": 954
+    },
+    {
+      "t": 1792042970,
+      "readN": 148,
+      "readSlow": 17,
+      "readMed": 185,
+      "sendN": 325,
+      "sendSlow": 151,
+      "sendMed": 1028
+    }
+  ]
+}

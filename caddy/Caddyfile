@@ -5,10 +5,21 @@
 #   其余            → NodeBB
 # Centrifugo admin 面板不走公网：compose 将 127.0.0.1:4000 绑到宿主机，
 # 需要 UI 时 ssh 端口转发访问 http://127.0.0.1:4000/centrifugo/admin/
-
 {
 	email admin@{$ODYSSEIA_DOMAIN}
 	# 生产再开：servers { protocols h1 h2 h3 }
+}
+
+# 分类缓存位于各 worker 内存中：同一 URI 固定到同一 worker，
+# 避免轮询导致 12 份冷缓存；其他路径仍轮询，防 /api/me 等热点集中。
+(nodebb_cluster) {
+	@categoryCache path /api/category/*
+	reverse_proxy @categoryCache nodebb:4567 nodebb:4568 nodebb:4569 nodebb:4570 nodebb:4571 nodebb:4572 nodebb:4573 nodebb:4574 nodebb:4575 nodebb:4576 nodebb:4577 nodebb:4578 {
+		lb_policy uri_hash
+	}
+	reverse_proxy nodebb:4567 nodebb:4568 nodebb:4569 nodebb:4570 nodebb:4571 nodebb:4572 nodebb:4573 nodebb:4574 nodebb:4575 nodebb:4576 nodebb:4577 nodebb:4578 {
+		lb_policy round_robin
+	}
 }
 
 {$ODYSSEIA_DOMAIN} {
@@ -47,7 +58,18 @@
 	}
 
 	# --- NodeBB（SSR 页面 + API + Socket.IO 后备通道） ---
+	# cluster 12 worker 各占一个端口（4567-4578），必须全列，
+	# 只写 4567 会把全部流量钉死在 worker#1（full-scale 实测：单 worker 饱和
+	# CPU 114%/4worker，send p50 2.7s 纯排队；宿主 16 核，full5 剥冷启动后
+	# 11.8 核满载，8 worker 仍不够 → 12 worker 吃满余量）
 	handle {
-		reverse_proxy nodebb:4567
+		import nodebb_cluster
 	}
+}
+
+# --- 内部 LB：分类 URI 亲和，其余请求 round_robin ---
+# 仅 docker 网内可达（未映射宿主机端口），无 Host 门禁；
+# 供 BFF（NODEBB_URL）与压测 k6（LT_HTTP_BASE）直打，分核 12 worker。
+:8090 {
+	import nodebb_cluster
 }

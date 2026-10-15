@@ -1,0 +1,120 @@
+{
+  "pid": 81,
+  "seconds": 45,
+  "memory": {
+    "rss": 415174656,
+    "heapTotal": 202113024,
+    "heapUsed": 170249656,
+    "external": 82441780,
+    "arrayBuffers": 26390502
+  },
+  "observation": {
+    "gcCount": 375,
+    "gcTotalMs": 753.1772780455649,
+    "gcMaxMs": 23.897654999047518,
+    "loopP99Ms": 29.638655,
+    "loopMaxMs": 92.733439
+  },
+  "top": [
+    [
+      "(idle) :0",
+      19933
+    ],
+    [
+      "(program) :0",
+      1208
+    ],
+    [
+      "#L file:///usr/src/app/node_modules/lru-cache/dist/commonjs/node/index.min.js:1",
+      1105
+    ],
+    [
+      "writeBuffer :0",
+      966
+    ],
+    [
+      "(garbage collector) :0",
+      705
+    ],
+    [
+      "runMicrotasks :0",
+      530
+    ],
+    [
+      "#O file:///usr/src/app/node_modules/lru-cache/dist/commonjs/node/index.min.js:1",
+      318
+    ],
+    [
+      "Hooks.fire file:///usr/src/app/src/plugins/hooks.js:95",
+      277
+    ],
+    [
+      "nextTick node:internal/process/task_queues:113",
+      240
+    ],
+    [
+      "(anonymous) file:///usr/src/app/src/database/redis/pubsub.js:16",
+      240
+    ],
+    [
+      "emit node:events:489",
+      215
+    ],
+    [
+      "serializeInto file:///usr/src/app/node_modules/bson/lib/bson.cjs:4089",
+      199
+    ],
+    [
+      "writev :0",
+      184
+    ],
+    [
+      "writeUtf8String :0",
+      184
+    ],
+    [
+      "wrapperCallback file:///usr/src/app/src/promisify.js:40",
+      178
+    ],
+    [
+      "#B file:///usr/src/app/node_modules/lru-cache/dist/commonjs/node/index.min.js:1",
+      172
+    ],
+    [
+      "serializeString file:///usr/src/app/node_modules/bson/lib/bson.cjs:3807",
+      162
+    ],
+    [
+      "resolveOptions file:///usr/src/app/node_modules/mongodb/lib/utils.js:420",
+      156
+    ],
+    [
+      "(anonymous) :0",
+      137
+    ],
+    [
+      "stringify file:///usr/src/app/node_modules/express/lib/response.js:1155",
+      132
+    ],
+    [
+      "command file:///usr/src/app/node_modules/mongodb/lib/sdam/server.js:149",
+      126
+    ],
+    [
+      "createSet file:///usr/src/app/node_modules/lodash/lodash.js:5532",
+      122
+    ],
+    [
+      "AbstractCursor file:///usr/src/app/node_modules/mongodb/lib/cursor/abstract_cursor.js:66",
+      120
+    ],
+    [
+      "prepareCommand file:///usr/src/app/node_modules/mongodb/lib/cmap/connection.js:175",
+      117
+    ],
+    [
+      "sendWire file:///usr/src/app/node_modules/mongodb/lib/cmap/connection.js:248",
+      114
+    ]
+  ]
+}

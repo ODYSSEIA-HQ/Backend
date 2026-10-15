@@ -1,0 +1,120 @@
+{
+  "pid": 81,
+  "seconds": 45,
+  "memory": {
+    "rss": 483352576,
+    "heapTotal": 201293824,
+    "heapUsed": 183807928,
+    "external": 84111348,
+    "arrayBuffers": 28051902
+  },
+  "observation": {
+    "gcCount": 375,
+    "gcTotalMs": 726.4094610400498,
+    "gcMaxMs": 26.05825399979949,
+    "loopP99Ms": 28.033023,
+    "loopMaxMs": 71.630847
+  },
+  "top": [
+    [
+      "(idle) :0",
+      22003
+    ],
+    [
+      "(program) :0",
+      1204
+    ],
+    [
+      "#L file:///usr/src/app/node_modules/lru-cache/dist/commonjs/node/index.min.js:1",
+      1072
+    ],
+    [
+      "writeBuffer :0",
+      910
+    ],
+    [
+      "(garbage collector) :0",
+      732
+    ],
+    [
+      "runMicrotasks :0",
+      420
+    ],
+    [
+      "#O file:///usr/src/app/node_modules/lru-cache/dist/commonjs/node/index.min.js:1",
+      328
+    ],
+    [
+      "nextTick node:internal/process/task_queues:113",
+      276
+    ],
+    [
+      "Hooks.fire file:///usr/src/app/src/plugins/hooks.js:95",
+      248
+    ],
+    [
+      "(anonymous) file:///usr/src/app/src/database/redis/pubsub.js:16",
+      230
+    ],
+    [
+      "serializeInto file:///usr/src/app/node_modules/bson/lib/bson.cjs:4089",
+      196
+    ],
+    [
+      "#B file:///usr/src/app/node_modules/lru-cache/dist/commonjs/node/index.min.js:1",
+      194
+    ],
+    [
+      "writev :0",
+      184
+    ],
+    [
+      "serializeString file:///usr/src/app/node_modules/bson/lib/bson.cjs:3807",
+      180
+    ],
+    [
+      "emit node:events:489",
+      173
+    ],
+    [
+      "writeUtf8String :0",
+      171
+    ],
+    [
+      "onStreamRead node:internal/stream_base_commons:166",
+      169
+    ],
+    [
+      "wrapperCallback file:///usr/src/app/src/promisify.js:40",
+      144
+    ],
+    [
+      "resolveOptions file:///usr/src/app/node_modules/mongodb/lib/utils.js:420",
+      134
+    ],
+    [
+      "(anonymous) :0",
+      127
+    ],
+    [
+      "#P file:///usr/src/app/node_modules/lru-cache/dist/commonjs/node/index.min.js:1",
+      116
+    ],
+    [
+      "isModeratorOfCategories file:///usr/src/app/src/privileges/users.js:35",
+      116
+    ],
+    [
+      "get file:///usr/src/app/node_modules/lru-cache/dist/commonjs/node/index.min.js:1",
+      115
+    ],
+    [
+      "command file:///usr/src/app/node_modules/mongodb/lib/sdam/server.js:149",
+      112
+    ],
+    [
+      "stringify file:///usr/src/app/node_modules/express/lib/response.js:1155",
+      104
+    ]
+  ]
+}

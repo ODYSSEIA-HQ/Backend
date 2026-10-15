@@ -6,6 +6,7 @@
 #   ① COPY 源带 vendor 路径前缀（build context 是项目根目录，docker-compose.yml: nodebb.build.context: .）
 #   ② final 段追加两个自研插件的落盘安装（沿用旧官方镜像方案的验证结论）
 # 健康检查（compose 定义）用 node -e fetch，node:lts-slim 自带 node，无 curl 依赖。
+# vendor patch 清单见 README；src/api/chats.js 的限速短路随此源码构建生效。
 
 # ---------- stage 1：装 NodeBB 生产依赖 ----------
 FROM node:lts AS build

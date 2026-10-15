@@ -1,0 +1,676 @@
+{
+  "read": {
+    "all": {
+      "n": 8993,
+      "med": 17.3,
+      "p90": 33.4,
+      "p95": 62.9,
+      "max": 2693.7
+    },
+    "parent": {
+      "n": 2683,
+      "med": 16.9,
+      "p90": 29,
+      "p95": 34.5,
+      "max": 613.6
+    },
+    "card": {
+      "n": 6310,
+      "med": 17.5,
+      "p90": 37.2,
+      "p95": 1221.7,
+      "max": 2693.7
+    }
+  },
+  "readSlowTop30": [
+    {
+      "ms": 2694,
+      "ep": "category-card",
+      "cid": "http://nodebb:4567/api/category/1024",
+      "t": "2026-10-15T08:35:19.056147095Z"
+    },
+    {
+      "ms": 2183,
+      "ep": "category-card",
+      "cid": "http://nodebb:4567/api/category/2162",
+      "t": "2026-10-15T08:35:17.879354508Z"
+    },
+    {
+      "ms": 2130,
+      "ep": "category-card",
+      "cid": "http://nodebb:4567/api/category/522",
+      "t": "2026-10-15T08:35:20.693043509Z"
+    },
+    {
+      "ms": 2097,
+      "ep": "category-card",
+      "cid": "http://nodebb:4567/api/category/1502",
+      "t": "2026-10-15T08:35:20.693079463Z"
+    },
+    {
+      "ms": 2096,
+      "ep": "category-card",
+      "cid": "http://nodebb:4567/api/category/622",
+      "t": "2026-10-15T08:35:20.32507105Z"
+    },
+    {
+      "ms": 1997,
+      "ep": "category-card",
+      "cid": "http://nodebb:4567/api/category/722",
+      "t": "2026-10-15T08:35:20.693121295Z"
+    },
+    {
+      "ms": 1962,
+      "ep": "category-card",
+      "cid": "http://nodebb:4567/api/category/2042",
+      "t": "2026-10-15T08:35:04.358198426Z"
+    },
+    {
+      "ms": 1829,
+      "ep": "category-card",
+      "cid": "http://nodebb:4567/api/category/2257",
+      "t": "2026-10-15T08:35:04.558807528Z"
+    },
+    {
+      "ms": 1774,
+      "ep": "category-card",
+      "cid": "http://nodebb:4567/api/category/2418",
+      "t": "2026-10-15T08:35:36.968098822Z"
+    },
+    {
+      "ms": 1749,
+      "ep": "category-card",
+      "cid": "http://nodebb:4567/api/category/1617",
+      "t": "2026-10-15T08:35:04.746045926Z"
+    },
+    {
+      "ms": 1746,
+      "ep": "category-card",
+      "cid": "http://nodebb:4567/api/category/959",
+      "t": "2026-10-15T08:35:03.041865942Z"
+    },
+    {
+      "ms": 1735,
+      "ep": "category-card",
+      "cid": "http://nodebb:4567/api/category/2384",
+      "t": "2026-10-15T08:37:32.058390225Z"
+    },
+    {
+      "ms": 1732,
+      "ep": "category-card",
+      "cid": "http://nodebb:4567/api/category/1658",
+      "t": "2026-10-15T08:37:32.221715587Z"
+    },
+    {
+      "ms": 1725,
+      "ep": "category-card",
+      "cid": "http://nodebb:4567/api/category/415",
+      "t": "2026-10-15T08:35:37.020291565Z"
+    },
+    {
+      "ms": 1721,
+      "ep": "category-card",
+      "cid": "http://nodebb:4567/api/category/2918",
+      "t": "2026-10-15T08:34:29.685178958Z"
+    },
+    {
+      "ms": 1700,
+      "ep": "category-card",
+      "cid": "http://nodebb:4567/api/category/222",
+      "t": "2026-10-15T08:34:59.228991755Z"
+    },
+    {
+      "ms": 1667,
+      "ep": "category-card",
+      "cid": "http://nodebb:4567/api/category/2685",
+      "t": "2026-10-15T08:35:25.629795336Z"
+    },
+    {
+      "ms": 1653,
+      "ep": "category-card",
+      "cid": "http://nodebb:4567/api/category/1625",
+      "t": "2026-10-15T08:34:59.915861218Z"
+    },
+    {
+      "ms": 1650,
+      "ep": "category-card",
+      "cid": "http://nodebb:4567/api/category/1966",
+      "t": "2026-10-15T08:35:22.346466496Z"
+    },
+    {
+      "ms": 1599,
+      "ep": "category-card",
+      "cid": "http://nodebb:4567/api/category/917",
+      "t": "2026-10-15T08:34:30.296868025Z"
+    },
+    {
+      "ms": 1591,
+      "ep": "category-card",
+      "cid": "http://nodebb:4567/api/category/2998",
+      "t": "2026-10-15T08:34:29.287955989Z"
+    },
+    {
+      "ms": 1583,
+      "ep": "category-card",
+      "cid": "http://nodebb:4567/api/category/2218",
+      "t": "2026-10-15T08:34:50.046724114Z"
+    },
+    {
+      "ms": 1576,
+      "ep": "category-card",
+      "cid": "http://nodebb:4567/api/category/482",
+      "t": "2026-10-15T08:34:30.306592727Z"
+    },
+    {
+      "ms": 1564,
+      "ep": "category-card",
+      "cid": "http://nodebb:4567/api/category/105",
+      "t": "2026-10-15T08:36:39.889643936Z"
+    },
+    {
+      "ms": 1561,
+      "ep": "category-card",
+      "cid": "http://nodebb:4567/api/category/798",
+      "t": "2026-10-15T08:35:23.056719966Z"
+    },
+    {
+      "ms": 1547,
+      "ep": "category-card",
+      "cid": "http://nodebb:4567/api/category/2622",
+      "t": "2026-10-15T08:35:00.709396624Z"
+    },
+    {
+      "ms": 1534,
+      "ep": "category-card",
+      "cid": "http://nodebb:4567/api/category/2599",
+      "t": "2026-10-15T08:35:14.464090669Z"
+    },
+    {
+      "ms": 1520,
+      "ep": "category-card",
+      "cid": "http://nodebb:4567/api/category/2737",
+      "t": "2026-10-15T08:35:37.715605586Z"
+    },
+    {
+      "ms": 1518,
+      "ep": "category-card",
+      "cid": "http://nodebb:4567/api/category/1738",
+      "t": "2026-10-15T08:34:49.382448249Z"
+    },
+    {
+      "ms": 1515,
+      "ep": "category-card",
+      "cid": "http://nodebb:4567/api/category/2585",
+      "t": "2026-10-15T08:36:27.106465693Z"
+    }
+  ],
+  "send": {
+    "stats": {
+      "n": 12033,
+      "med": 2929.4,
+      "p90": 3343.1,
+      "p95": 3526.8,
+      "max": 5273.9
+    },
+    "failed": 10,
+    "hist": {
+      "<500": 2,
+      "500-1000": 13,
+      "1000-2000": 46,
+      "2000-4000": 11817,
+      "≥4000": 155
+    },
+    "slowTop30": [
+      {
+        "ms": 5274,
+        "status": "200",
+        "t": "2026-10-15T08:35:21.637812723Z"
+      },
+      {
+        "ms": 5204,
+        "status": "200",
+        "t": "2026-10-15T08:35:21.509037294Z"
+      },
+      {
+        "ms": 5104,
+        "status": "200",
+        "t": "2026-10-15T08:35:21.667322422Z"
+      },
+      {
+        "ms": 5036,
+        "status": "200",
+        "t": "2026-10-15T08:35:21.530086133Z"
+      },
+      {
+        "ms": 5014,
+        "status": "200",
+        "t": "2026-10-15T08:35:21.049014142Z"
+      },
+      {
+        "ms": 5006,
+        "status": "200",
+        "t": "2026-10-15T08:35:21.230465728Z"
+      },
+      {
+        "ms": 5004,
+        "status": "200",
+        "t": "2026-10-15T08:35:21.108808229Z"
+      },
+      {
+        "ms": 4999,
+        "status": "200",
+        "t": "2026-10-15T08:35:21.284266777Z"
+      },
+      {
+        "ms": 4997,
+        "status": "200",
+        "t": "2026-10-15T08:35:21.321766068Z"
+      },
+      {
+        "ms": 4991,
+        "status": "200",
+        "t": "2026-10-15T08:35:21.284323267Z"
+      },
+      {
+        "ms": 4991,
+        "status": "200",
+        "t": "2026-10-15T08:35:21.346035314Z"
+      },
+      {
+        "ms": 4985,
+        "status": "200",
+        "t": "2026-10-15T08:35:19.958368131Z"
+      },
+      {
+        "ms": 4984,
+        "status": "200",
+        "t": "2026-10-15T08:35:21.50889376Z"
+      },
+      {
+        "ms": 4905,
+        "status": "200",
+        "t": "2026-10-15T08:35:20.659221356Z"
+      },
+      {
+        "ms": 4886,
+        "status": "200",
+        "t": "2026-10-15T08:35:20.231310198Z"
+      },
+      {
+        "ms": 4866,
+        "status": "200",
+        "t": "2026-10-15T08:35:20.061017722Z"
+      },
+      {
+        "ms": 4853,
+        "status": "200",
+        "t": "2026-10-15T08:35:20.437899903Z"
+      },
+      {
+        "ms": 4852,
+        "status": "200",
+        "t": "2026-10-15T08:35:19.81605139Z"
+      },
+      {
+        "ms": 4851,
+        "status": "200",
+        "t": "2026-10-15T08:35:21.425510972Z"
+      },
+      {
+        "ms": 4847,
+        "status": "200",
+        "t": "2026-10-15T08:35:20.012218913Z"
+      },
+      {
+        "ms": 4846,
+        "status": "200",
+        "t": "2026-10-15T08:35:20.459687855Z"
+      },
+      {
+        "ms": 4845,
+        "status": "200",
+        "t": "2026-10-15T08:35:21.048975697Z"
+      },
+      {
+        "ms": 4838,
+        "status": "200",
+        "t": "2026-10-15T08:35:21.392334711Z"
+      },
+      {
+        "ms": 4837,
+        "status": "200",
+        "t": "2026-10-15T08:35:20.061197984Z"
+      },
+      {
+        "ms": 4835,
+        "status": "200",
+        "t": "2026-10-15T08:35:19.619084908Z"
+      },
+      {
+        "ms": 4835,
+        "status": "200",
+        "t": "2026-10-15T08:35:19.639397207Z"
+      },
+      {
+        "ms": 4822,
+        "status": "200",
+        "t": "2026-10-15T08:35:20.026197515Z"
+      },
+      {
+        "ms": 4821,
+        "status": "200",
+        "t": "2026-10-15T08:35:19.695653705Z"
+      },
+      {
+        "ms": 4807,
+        "status": "200",
+        "t": "2026-10-15T08:35:19.671398818Z"
+      },
+      {
+        "ms": 4800,
+        "status": "200",
+        "t": "2026-10-15T08:35:21.284392101Z"
+      }
+    ]
+  },
+  "chat": {
+    "stats": {
+      "n": 7360,
+      "med": 3046,
+      "p90": 3475,
+      "p95": 3637,
+      "max": 5417
+    },
+    "hist": {
+      "100-500": 1,
+      "500-1000": 4,
+      "1000-2000": 24,
+      "≥2000": 7331
+    }
+  },
+  "ws": {
+    "msgsReceived": 67008,
+    "subscribeDenied": 2
+  },
+  "timeline": [
+    {
+      "t": 1792053240,
+      "readN": 143,
+      "readSlow": 13,
+      "readMed": 162,
+      "sendN": 116,
+      "sendSlow": 114,
+      "sendMed": 2710
+    },
+    {
+      "t": 1792053250,
+      "readN": 301,
+      "readSlow": 36,
+      "readMed": 177,
+      "sendN": 392,
+      "sendSlow": 392,
+      "sendMed": 3089
+    },
+    {
+      "t": 1792053260,
+      "readN": 302,
+      "readSlow": 29,
+      "readMed": 138,
+      "sendN": 382,
+      "sendSlow": 382,
+      "sendMed": 2894
+    },
+    {
+      "t": 1792053270,
+      "readN": 299,
+      "readSlow": 34,
+      "readMed": 153,
+      "sendN": 452,
+      "sendSlow": 452,
+      "sendMed": 2857
+    },
+    {
+      "t": 1792053280,
+      "readN": 303,
+      "readSlow": 23,
+      "readMed": 120,
+      "sendN": 373,
+      "sendSlow": 373,
+      "sendMed": 3035
+    },
+    {
+      "t": 1792053290,
+      "readN": 299,
+      "readSlow": 25,
+      "readMed": 132,
+      "sendN": 366,
+      "sendSlow": 366,
+      "sendMed": 3192
+    },
+    {
+      "t": 1792053300,
+      "readN": 301,
+      "readSlow": 17,
+      "readMed": 102,
+      "sendN": 351,
+      "sendSlow": 351,
+      "sendMed": 3509
+    },
+    {
+      "t": 1792053310,
+      "readN": 292,
+      "readSlow": 23,
+      "readMed": 137,
+      "sendN": 321,
+      "sendSlow": 321,
+      "sendMed": 3555
+    },
+    {
+      "t": 1792053320,
+      "readN": 302,
+      "readSlow": 13,
+      "readMed": 91,
+      "sendN": 352,
+      "sendSlow": 352,
+      "sendMed": 3647
+    },
+    {
+      "t": 1792053330,
+      "readN": 299,
+      "readSlow": 16,
+      "readMed": 93,
+      "sendN": 372,
+      "sendSlow": 372,
+      "sendMed": 3240
+    },
+    {
+      "t": 1792053340,
+      "readN": 302,
+      "readSlow": 20,
+      "readMed": 107,
+      "sendN": 377,
+      "sendSlow": 377,
+      "sendMed": 3083
+    },
+    {
+      "t": 1792053350,
+      "readN": 299,
+      "readSlow": 14,
+      "readMed": 80,
+      "sendN": 392,
+      "sendSlow": 392,
+      "sendMed": 3088
+    },
+    {
+      "t": 1792053360,
+      "readN": 300,
+      "readSlow": 12,
+      "readMed": 69,
+      "sendN": 410,
+      "sendSlow": 410,
+      "sendMed": 2958
+    },
+    {
+      "t": 1792053370,
+      "readN": 301,
+      "readSlow": 16,
+      "readMed": 86,
+      "sendN": 392,
+      "sendSlow": 392,
+      "sendMed": 2995
+    },
+    {
+      "t": 1792053380,
+      "readN": 298,
+      "readSlow": 7,
+      "readMed": 51,
+      "sendN": 386,
+      "sendSlow": 386,
+      "sendMed": 3036
+    },
+    {
+      "t": 1792053390,
+      "readN": 303,
+      "readSlow": 13,
+      "readMed": 75,
+      "sendN": 399,
+      "sendSlow": 399,
+      "sendMed": 2993
+    },
+    {
+      "t": 1792053400,
+      "readN": 299,
+      "readSlow": 12,
+      "readMed": 67,
+      "sendN": 411,
+      "sendSlow": 411,
+      "sendMed": 3002
+    },
+    {
+      "t": 1792053410,
+      "readN": 298,
+      "readSlow": 9,
+      "readMed": 59,
+      "sendN": 379,
+      "sendSlow": 379,
+      "sendMed": 3027
+    },
+    {
+      "t": 1792053420,
+      "readN": 302,
+      "readSlow": 12,
+      "readMed": 67,
+      "sendN": 418,
+      "sendSlow": 418,
+      "sendMed": 2986
+    },
+    {
+      "t": 1792053430,
+      "readN": 299,
+      "readSlow": 10,
+      "readMed": 59,
+      "sendN": 411,
+      "sendSlow": 411,
+      "sendMed": 2802
+    },
+    {
+      "t": 1792053440,
+      "readN": 301,
+      "readSlow": 8,
+      "readMed": 54,
+      "sendN": 417,
+      "sendSlow": 417,
+      "sendMed": 2939
+    },
+    {
+      "t": 1792053450,
+      "readN": 300,
+      "readSlow": 8,
+      "readMed": 56,
+      "sendN": 410,
+      "sendSlow": 410,
+      "sendMed": 2948
+    },
+    {
+      "t": 1792053460,
+      "readN": 301,
+      "readSlow": 6,
+      "readMed": 41,
+      "sendN": 432,
+      "sendSlow": 432,
+      "sendMed": 2757
+    },
+    {
+      "t": 1792053470,
+      "readN": 300,
+      "readSlow": 2,
+      "readMed": 26,
+      "sendN": 415,
+      "sendSlow": 415,
+      "sendMed": 2817
+    },
+    {
+      "t": 1792053480,
+      "readN": 300,
+      "readSlow": 4,
+      "readMed": 33,
+      "sendN": 447,
+      "sendSlow": 447,
+      "sendMed": 2723
+    },
+    {
+      "t": 1792053490,
+      "readN": 300,
+      "readSlow": 1,
+      "readMed": 23,
+      "sendN": 417,
+      "sendSlow": 417,
+      "sendMed": 2762
+    },
+    {
+      "t": 1792053500,
+      "readN": 300,
+      "readSlow": 5,
+      "readMed": 39,
+      "sendN": 449,
+      "sendSlow": 449,
+      "sendMed": 2802
+    },
+    {
+      "t": 1792053510,
+      "readN": 300,
+      "readSlow": 4,
+      "readMed": 37,
+      "sendN": 387,
+      "sendSlow": 387,
+      "sendMed": 2873
+    },
+    {
+      "t": 1792053520,
+      "readN": 300,
+      "readSlow": 6,
+      "readMed": 42,
+      "sendN": 455,
+      "sendSlow": 455,
+      "sendMed": 2756
+    },
+    {
+      "t": 1792053530,
+      "readN": 300,
+      "readSlow": 4,
+      "readMed": 32,
+      "sendN": 440,
+      "sendSlow": 440,
+      "sendMed": 2711
+    },
+    {
+      "t": 1792053540,
+      "readN": 149,
+      "readSlow": 1,
+      "readMed": 26,
+      "sendN": 312,
+      "sendSlow": 312,
+      "sendMed": 2552
+    }
+  ]
+}

@@ -18,6 +18,17 @@
  * 自定义纪律（架构决策 D4/D7）：只走插件 hook，不改 NodeBB 核心。
  */
 
+const http = require('http');
+const { randomBytes } = require('crypto');
+
+// 每个 worker 独有，仅用于同一进程的回环刷新；外部请求不能凭标记绕过限频。
+const cacheRefreshToken = randomBytes(32).toString('hex');
+function isCacheRefresh(req) {
+	const address = req.socket && req.socket.remoteAddress;
+	return (address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1') &&
+		req.headers && req.headers['x-odysseia-cache-refresh'] === cacheRefreshToken;
+}
+
 const { publish } = require('./lib/centrifugo');
 const search = require('./lib/search');
 const internalApi = require('./lib/internal');
@@ -54,6 +65,10 @@ const plugin = {};
 
 const apiHits = new Map(); // key -> number[]
 
+// 限额 env 可覆盖：压测床 k6 单容器 IP 会撞默认上限（.env 调高即可，prod 勿动）。
+const API_RATE_WINDOW_MS = Math.max(1000, parseInt(process.env.ODYSSEIA_API_RATE_WINDOW_MS, 10) || 10_000);
+const API_RATE_MAX = Math.max(1, parseInt(process.env.ODYSSEIA_API_RATE_MAX, 10) || 60); // 默认 60 req/窗口/IP
+
 function apiRateCheck(key, windowMs, max) {
 	const now = Date.now();
 	const hits = (apiHits.get(key) || []).filter(t => now - t < windowMs);
@@ -71,13 +86,15 @@ function apiRateLimitMiddleware(req, res, next) {
 	// 内部回调豁免：BFF → /api/v3/plugins/odysseia/* 带 ODYSSEIA_INTERNAL_TOKEN，
 	// 不属于公网打面（且内部 token 已鉴权，无需再限）
 	if (req.path && req.path.startsWith('/api/v3/plugins/odysseia/')) return next();
+	// 分类缓存后台自刷新豁免：127.0.0.1 回环打到本 worker，非公网打面（也避免挤占 IP 桶）
+	if (isCacheRefresh(req)) return next();
 
 	// 只限 /api 前缀——SSR 页面走 NodeBB 自有渲染路径，静态资源不经过 router
 	if (!req.path || !req.path.startsWith('/api/')) return next();
 
 	// 粒度：IP 层（暴刷）——登录用户再由下游路由/插件各自配额（postDelay 等已覆盖）
 	const ip = (req.ip || (req.connection && req.connection.remoteAddress) || 'unknown').replace(/^::ffff:/, '');
-	const retryAfterMs = apiRateCheck(`api:ip:${ip}`, 10_000, 60); // 60 req/10s/IP —— 正常浏览远低于此，爬虫/脚本一击即中
+	const retryAfterMs = apiRateCheck(`api:ip:${ip}`, API_RATE_WINDOW_MS, API_RATE_MAX); // 正常浏览远低于此，爬虫/脚本一击即中
 	if (retryAfterMs > 0) {
 		res.set({
 			'Retry-After': String(Math.ceil(retryAfterMs / 1000)),
@@ -92,12 +109,168 @@ function apiRateLimitMiddleware(req, res, next) {
 	next();
 }
 
+// ---------- 分类目录 API 缓存 + SWR（压测 P0 热点：父分类 3000 子分类聚合页冷渲染实测 1.1s+/次） ----------
+// 只拦 GET /api/category/*。key = 认证凭证 + originalUrl：
+//   - 匿名（无 Authorization / 无 express.sid）→ 全部游客共享一条（游客权限视图一致）
+//   - Bearer / 登录 cookie → 各自一条（权限视图隔离，不串权）
+// 三级状态（S2 取证：TTL 5s + cluster 4 worker 各持独立缓存 → 父分类 miss 率 ~65%，
+// 每次冷渲染 1.5s CPU 饱和事件循环，把同 worker 上无关的 send 也拖到 p95 1.47s）：
+//   fresh（< TTL）                → 直接回放（~15ms）
+//   stale（TTL ~ TTL+STALE_MS）   → SWR：立即回放旧值 + 后台单飞刷新，用户永不等待重渲染
+//   miss（冷启动 / 超陈旧上限）    → in-flight 去重，首个用户请求承担一次全量渲染
+// 后台刷新 = 自请求 127.0.0.1:<本 worker 端口>（带 x-odysseia-cache-refresh 头，限频与
+// 缓存层验证回环地址及本 worker 随机凭证后放行）；响应 200 才覆盖缓存，失败保留
+// 旧值，cooldown 内不重试。TTL 默认 60s：刷新占空比 1.5s/60s = 2.5%/worker，低于 5% 的
+// p95 影响面。cluster 下每 worker 各持一份、各自后台刷新。fail-open：任何异常放行原始请求。
+// 出口依据：middleware/render.js L90 `res.locals.isAPI → res.json(options)`——API JSON
+// 唯一出口，包装 res.json 即可捕获完整响应体。
+
+function cacheDuration(name, fallback) {
+	const value = parseInt(process.env[name], 10);
+	return Number.isFinite(value) ? Math.max(0, value) : fallback;
+}
+
+const CATEGORY_CACHE_TTL_MS = cacheDuration('ODYSSEIA_CATEGORY_CACHE_TTL_MS', 60_000);
+const CATEGORY_CACHE_STALE_MS = cacheDuration('ODYSSEIA_CATEGORY_CACHE_STALE_MS', 600_000);
+const CATEGORY_REFRESH_COOLDOWN_MS = 5_000; // 后台刷新失败后的重试间隔（成功则新条目自然续期）
+const CATEGORY_CACHE_MAX = Math.max(1, parseInt(process.env.ODYSSEIA_CATEGORY_CACHE_MAX, 10) || 2000);
+const CATEGORY_PATH_RE = /^\/api\/category\/\d+(?:\/|$)/;
+
+const categoryCache = new Map(); // key -> { body, expiresAt, staleUntil, refreshCooldownUntil }
+const categoryInflight = new Map(); // key -> Promise（渲染路径 resolve body|null；后台刷新 resolve undefined）
+
+function categoryCacheKey(req) {
+	let cred = 'anon';
+	const auth = req.headers && req.headers.authorization;
+	if (auth) {
+		cred = `bearer:${auth}`;
+	} else {
+		const cookie = req.headers && req.headers.cookie;
+		const sid = cookie && /express\.sid=([^;]+)/.exec(cookie);
+		if (sid) cred = `sid:${sid[1]}`;
+	}
+	return `${cred}|${req.originalUrl || req.url}`;
+}
+
+function categoryCacheLookup(key) {
+	const entry = categoryCache.get(key);
+	if (!entry) return { state: 'miss' };
+	const now = Date.now();
+	if (now < entry.expiresAt) return { state: 'fresh', body: entry.body };
+	if (now < entry.staleUntil) return { state: 'stale', body: entry.body };
+	categoryCache.delete(key); // 超过陈旧上限：彻底回冷 miss
+	return { state: 'miss' };
+}
+
+function categoryCacheSet(key, body) {
+	// 容量护栏：FIFO 淘汰最旧条目（set 前 delete 重排，近似 LRU；不再 clear() 全冷重启）
+	categoryCache.delete(key); // 更新已有条目不应误淘汰其他分类
+	while (categoryCache.size >= CATEGORY_CACHE_MAX) {
+		const oldest = categoryCache.keys().next().value;
+		categoryCache.delete(oldest);
+	}
+	const now = Date.now();
+	categoryCache.set(key, {
+		body,
+		expiresAt: now + CATEGORY_CACHE_TTL_MS,
+		staleUntil: now + CATEGORY_CACHE_TTL_MS + CATEGORY_CACHE_STALE_MS,
+	});
+}
+
+function categoryCacheReplay(res, body, kind) {
+	res.set({
+		'X-Odysseia-Cache': kind,
+		'cache-control': 'private, no-cache', // 与源响应（render.js L50）一致，避免浏览器缓存叠加
+	});
+	res.status(200).json(body);
+}
+
+function triggerBackgroundRefresh(key, req) {
+	if (categoryInflight.has(key)) return; // 已有单飞在途（渲染或刷新）
+	const entry = categoryCache.get(key);
+	if (entry && Date.now() < (entry.refreshCooldownUntil || 0)) return; // 失败重试限频
+	const port = req.socket && req.socket.localPort;
+	if (!port) return; // 拿不到本 worker 端口：放弃刷新，旧值继续服务到陈旧上限
+
+	const headers = { 'x-odysseia-cache-refresh': cacheRefreshToken };
+	if (req.headers.authorization) headers.authorization = req.headers.authorization;
+	if (req.headers.cookie) headers.cookie = req.headers.cookie;
+	if (entry) entry.refreshCooldownUntil = Date.now() + CATEGORY_REFRESH_COOLDOWN_MS;
+
+	const done = new Promise((resolve) => {
+		const r = http.get({ host: '127.0.0.1', port, path: req.originalUrl || req.url, headers }, (res) => {
+			const chunks = [];
+			res.on('data', (c) => chunks.push(c));
+			res.on('end', () => {
+				if (res.statusCode === 200) {
+					try {
+						categoryCacheSet(key, JSON.parse(Buffer.concat(chunks).toString('utf8')));
+					} catch (e) { /* 非 JSON：保留旧值 */ }
+				}
+				resolve();
+			});
+		});
+		r.on('error', () => resolve());
+		r.setTimeout(15_000, () => r.destroy()); // 超时兜底：destroy → error → resolve
+	});
+	categoryInflight.set(key, done.then(() => categoryInflight.delete(key), () => categoryInflight.delete(key)));
+}
+
+async function categoryCacheMiddleware(req, res, next) {
+	try {
+		// 后台自刷新请求：绕过缓存层（否则永远回放旧值，刷新死锁）
+		if (isCacheRefresh(req)) return next();
+
+		if (CATEGORY_CACHE_TTL_MS === 0 || req.method !== 'GET' || !CATEGORY_PATH_RE.test(req.path || '')) {
+			return next();
+		}
+		const key = categoryCacheKey(req);
+
+		// ① 新鲜命中：直接回放
+		const look = categoryCacheLookup(key);
+		if (look.state === 'fresh') return categoryCacheReplay(res, look.body, 'hit-fresh');
+
+		// ② 陈旧可服务（SWR）：立即回放旧值 + 后台单飞刷新——重渲染成本不再由用户请求承担
+		if (look.state === 'stale') {
+			triggerBackgroundRefresh(key, req);
+			return categoryCacheReplay(res, look.body, 'hit-stale');
+		}
+
+		// ③ 冷 miss：in-flight 去重，并发只放一个渲染者，其余等待回放
+		if (categoryInflight.has(key)) {
+			const body = await categoryInflight.get(key);
+			if (body) return categoryCacheReplay(res, body, 'hit-inflight');
+			return next();
+		}
+		let settle;
+		const done = new Promise((resolve) => { settle = resolve; });
+		const finish = (body) => { try { settle(body); } catch (e) { /* noop */ } };
+		const origJson = res.json.bind(res);
+		res.json = function (body) {
+			const cacheable = res.statusCode === 200 && body != null;
+			try {
+				if (cacheable) categoryCacheSet(key, body);
+			} catch (e) { /* 缓存写入失败不影响响应 */ }
+			finish(cacheable ? body : null);
+			return origJson(body);
+		};
+		// 兜底：连接关闭仍未 res.json（重定向/中断/非 JSON 出口）→ 释放等待者
+		res.on('close', () => finish(null));
+		categoryInflight.set(key, done);
+		done.then(() => categoryInflight.delete(key), () => categoryInflight.delete(key));
+		next();
+	} catch (e) {
+		next(); // fail-open
+	}
+}
+
 plugin.init = async function (params) {
-	// static:app.load：挂载内部鉴权路由 + 全局 API 限频
+	// static:app.load：挂载内部鉴权路由 + 全局 API 限频 + 分类目录缓存
 	const { router, middleware } = params;
 	router.use(apiRateLimitMiddleware);
+	router.use(categoryCacheMiddleware);
 	internalApi.mount(router, middleware);
-	console.log('[odysseia-bridge] 已挂载内部鉴权 API (/api/v3/plugins/odysseia/*) + 全局 API 限频');
+	console.log(`[odysseia-bridge] 已挂载内部鉴权 API (/api/v3/plugins/odysseia/*) + 全局 API 限频 + 分类目录缓存 TTL=${CATEGORY_CACHE_TTL_MS}ms`);
 };
 
 // ---------- Slowmode：category 级 per-user 发帖冷却 ----------
@@ -367,7 +540,15 @@ async function readableCids(uid) {
 // ---------- 私聊事件 → chat 频道广播 ----------
 // filter:messaging.notify（v4.x 唯一形态，无 action 版；src/messaging/notifications.js 实证）
 // payload = { roomId, fromUid, message: messageObj, public }
-// 纪律：filter hook 必须 return data——返回 falsy 会掐断 NodeBB 原生通知流
+//
+// 保留现有部署默认值：禁用原生聊天通知；设为 0 恢复完整原生管线。
+// 禁用会跳过 Socket.IO 消息/未读推送、站内通知及 ActivityPub 私信分发，
+// 也会影响依赖这些通知的邮件。主写路径的未读标记仍然保留。
+// Centrifugo 广播独立执行，但接收端必须实际订阅 chat:{roomId} 才能收到；
+// 不能把已有 topic/user 订阅或压测客户端当作前端聊天已完成的证明。
+// 原生模式包含跨 worker 的 fetchSockets RPC，需要单独测量其资源开销。
+const NATIVE_CHAT_NOTIFY_DISABLED = process.env.ODYSSEIA_DISABLE_NATIVE_CHAT_NOTIFY !== '0';
+
 plugin.onChatNotify = async function (data) {
 	const roomId = data && data.roomId;
 	const msg = (data && data.message) || {};
@@ -395,7 +576,10 @@ plugin.onChatNotify = async function (data) {
 			});
 		}
 	}
-	return data; // filter hook 契约：原样放行
+	if (NATIVE_CHAT_NOTIFY_DISABLED) {
+		return undefined; // 掐断核心原生通知流（socket.io 广播/fetchSockets RPC/站内通知/activitypub）
+	}
+	return data; // filter hook 契约：原样放行（原生流恢复模式）
 };
 
 // ---------- 身分组装饰接线（引擎 = lib/decor.js，纯库零 hook） ----------

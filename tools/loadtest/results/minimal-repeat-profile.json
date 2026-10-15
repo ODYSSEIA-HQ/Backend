@@ -1,0 +1,120 @@
+{
+  "pid": 89,
+  "seconds": 45,
+  "memory": {
+    "rss": 355217408,
+    "heapTotal": 181301248,
+    "heapUsed": 148007424,
+    "external": 78676596,
+    "arrayBuffers": 22625318
+  },
+  "observation": {
+    "gcCount": 195,
+    "gcTotalMs": 329.50615502148867,
+    "gcMaxMs": 24.137343998998404,
+    "loopP99Ms": 24.018943,
+    "loopMaxMs": 60.030975
+  },
+  "top": [
+    [
+      "(idle) :0",
+      26573
+    ],
+    [
+      "(program) :0",
+      1162
+    ],
+    [
+      "writeBuffer :0",
+      785
+    ],
+    [
+      "(garbage collector) :0",
+      393
+    ],
+    [
+      "runMicrotasks :0",
+      389
+    ],
+    [
+      "nextTick node:internal/process/task_queues:113",
+      288
+    ],
+    [
+      "(anonymous) file:///usr/src/app/src/database/redis/pubsub.js:16",
+      255
+    ],
+    [
+      "emit node:events:489",
+      215
+    ],
+    [
+      "Hooks.fire file:///usr/src/app/src/plugins/hooks.js:95",
+      203
+    ],
+    [
+      "writev :0",
+      163
+    ],
+    [
+      "onStreamRead node:internal/stream_base_commons:166",
+      152
+    ],
+    [
+      "writeUtf8String :0",
+      147
+    ],
+    [
+      "wrapperCallback file:///usr/src/app/src/promisify.js:40",
+      138
+    ],
+    [
+      "serializeInto file:///usr/src/app/node_modules/bson/lib/bson.cjs:4089",
+      120
+    ],
+    [
+      "getHostname :0",
+      112
+    ],
+    [
+      "resolveOptions file:///usr/src/app/node_modules/mongodb/lib/utils.js:420",
+      104
+    ],
+    [
+      "stringify file:///usr/src/app/node_modules/express/lib/response.js:1155",
+      101
+    ],
+    [
+      "executeOperationWithRetries file:///usr/src/app/node_modules/mongodb/lib/operations/execute_operation.js:165",
+      101
+    ],
+    [
+      "assignValue file:///usr/src/app/node_modules/bson/lib/bson.cjs:3323",
+      101
+    ],
+    [
+      "prepareCommand file:///usr/src/app/node_modules/mongodb/lib/cmap/connection.js:175",
+      94
+    ],
+    [
+      "#v file:///usr/src/app/node_modules/lru-cache/dist/commonjs/node/index.min.js:1",
+      93
+    ],
+    [
+      "(anonymous) file:///usr/src/app/node_modules/mongodb/lib/sessions.js:824",
+      93
+    ],
+    [
+      "sendWire file:///usr/src/app/node_modules/mongodb/lib/cmap/connection.js:248",
+      86
+    ],
+    [
+      "command file:///usr/src/app/node_modules/mongodb/lib/sdam/server.js:149",
+      80
+    ],
+    [
+      "selectServer file:///usr/src/app/node_modules/mongodb/lib/sdam/topology.js:273",
+      79
+    ]
+  ]
+}

@@ -8,3 +8,7 @@ node_modules/
 bff/target/
 # JSDoc 类型检查的本地工具链（typescript + @types/node，不入库）
 .tscheck/
+# 压测明细数百 MB；种子含用户 Bearer token，仅留本地。
+tools/loadtest/results/*detail*.json
+tools/loadtest/seed-output.json
+tools/loadtest/results/*.cpuprofile

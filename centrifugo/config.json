@@ -11,7 +11,51 @@
 		"type": "memory"
 	},
 	"channel": {
-		"max_length": 255
+		"max_length": 255,
+		"namespaces": [
+			{
+				"name": "topic",
+				"presence": true,
+				"join_leave": true,
+				"history_size": 1000,
+				"history_ttl": "3600s",
+				"force_recovery": true,
+				"allow_positioning": true,
+				"allow_history_for_client": true,
+				"subscribe_proxy_enabled": true,
+				"subscribe_proxy_name": "bff"
+			},
+			{
+				"name": "chat",
+				"presence": true,
+				"join_leave": false,
+				"history_size": 200,
+				"history_ttl": "3600s",
+				"force_recovery": true,
+				"allow_positioning": true,
+				"allow_history_for_client": true,
+				"subscribe_proxy_enabled": true,
+				"subscribe_proxy_name": "bff"
+			},
+			{
+				"name": "typing",
+				"presence": true,
+				"join_leave": false,
+				"allow_publish_for_subscriber": true,
+				"subscribe_proxy_enabled": true,
+				"subscribe_proxy_name": "bff"
+			},
+			{
+				"name": "user",
+				"presence": false,
+				"history_size": 50,
+				"history_ttl": "86400s",
+				"force_recovery": true,
+				"allow_history_for_client": true,
+				"subscribe_proxy_enabled": true,
+				"subscribe_proxy_name": "bff"
+			}
+		]
 	},
 	"client": {
 		"insecure": false,
@@ -20,50 +64,6 @@
 			"hmac_secret_key": ""
 		}
 	},
-	"namespaces": [
-		{
-			"name": "topic",
-			"presence": true,
-			"join_leave": true,
-			"history_size": 1000,
-			"history_ttl": "3600s",
-			"force_recovery": true,
-			"allow_positioning": true,
-			"allow_history_for_client": true,
-			"subscribe_proxy_enabled": true,
-			"subscribe_proxy_name": "bff"
-		},
-		{
-			"name": "chat",
-			"presence": true,
-			"join_leave": false,
-			"history_size": 200,
-			"history_ttl": "3600s",
-			"force_recovery": true,
-			"allow_positioning": true,
-			"allow_history_for_client": true,
-			"subscribe_proxy_enabled": true,
-			"subscribe_proxy_name": "bff"
-		},
-		{
-			"name": "typing",
-			"presence": true,
-			"join_leave": false,
-			"allow_publish_for_subscriber": true,
-			"subscribe_proxy_enabled": true,
-			"subscribe_proxy_name": "bff"
-		},
-		{
-			"name": "user",
-			"presence": false,
-			"history_size": 50,
-			"history_ttl": "86400s",
-			"force_recovery": true,
-			"allow_history_for_client": true,
-			"subscribe_proxy_enabled": true,
-			"subscribe_proxy_name": "bff"
-		}
-	],
 	"proxies": [
 		{
 			"name": "bff",

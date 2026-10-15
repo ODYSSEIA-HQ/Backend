@@ -1,0 +1,699 @@
+{
+  "t0": "2026-10-14T21:30:14.323Z",
+  "metricCounts": {
+    "vus": 481,
+    "vus_max": 481,
+    "ws_sessions": 11537,
+    "ws_connecting": 11537,
+    "ws_msgs_sent": 59568,
+    "ws_msgs_received": 63356,
+    "ws_connected": 11537,
+    "ws_session_duration": 9917,
+    "data_sent": 26593,
+    "data_received": 26593,
+    "iteration_duration": 24943,
+    "iterations": 24943,
+    "http_reqs": 15056,
+    "http_req_duration": 15056,
+    "http_req_blocked": 15056,
+    "http_req_connecting": 15056,
+    "http_req_tls_handshaking": 15056,
+    "http_req_sending": 15056,
+    "http_req_waiting": 15056,
+    "http_req_receiving": 15056,
+    "http_req_failed": 15056,
+    "dropped_iterations": 23946,
+    "checks": 6199,
+    "chat_sent_ok": 6193,
+    "chat_latency_ms": 3788,
+    "chat_received": 3788,
+    "send_errors": 6,
+    "ws_subscribe_denied": 1
+  },
+  "ws_msgs_total": 63356,
+  "read": {
+    "overall": {
+      "count": 8857,
+      "avg": 429.9,
+      "p50": 28.5,
+      "p90": 1340.9,
+      "p95": 1598.8,
+      "p99": 2192,
+      "max": 3503.9
+    },
+    "byEndpoint": {
+      "category-card": {
+        "count": 6225,
+        "avg": 599,
+        "p50": 63.1,
+        "p90": 1462.1,
+        "p95": 1712.2,
+        "p99": 2367,
+        "max": 3503.9
+      },
+      "category-parent": {
+        "count": 2632,
+        "avg": 29.9,
+        "p50": 20.1,
+        "p90": 38,
+        "p95": 49.4,
+        "p99": 328.2,
+        "max": 1361.4
+      }
+    },
+    "slowCount": 3029,
+    "slowTop30": [
+      {
+        "t": "2026-10-14T21:30:18.666387817Z",
+        "ep": "category-card",
+        "dur": 3504,
+        "status": "200",
+        "url": "http://nodebb:4567/api/category/566"
+      },
+      {
+        "t": "2026-10-14T21:30:18.990738676Z",
+        "ep": "category-card",
+        "dur": 3361,
+        "status": "200",
+        "url": "http://nodebb:4567/api/category/1530"
+      },
+      {
+        "t": "2026-10-14T21:30:19.139492789Z",
+        "ep": "category-card",
+        "dur": 3245,
+        "status": "200",
+        "url": "http://nodebb:4567/api/category/414"
+      },
+      {
+        "t": "2026-10-14T21:30:19.203489625Z",
+        "ep": "category-card",
+        "dur": 3175,
+        "status": "200",
+        "url": "http://nodebb:4567/api/category/2708"
+      },
+      {
+        "t": "2026-10-14T21:30:19.203540584Z",
+        "ep": "category-card",
+        "dur": 3108,
+        "status": "200",
+        "url": "http://nodebb:4567/api/category/716"
+      },
+      {
+        "t": "2026-10-14T21:30:18.514210162Z",
+        "ep": "category-card",
+        "dur": 3086,
+        "status": "200",
+        "url": "http://nodebb:4567/api/category/746"
+      },
+      {
+        "t": "2026-10-14T21:30:18.905658297Z",
+        "ep": "category-card",
+        "dur": 3077,
+        "status": "200",
+        "url": "http://nodebb:4567/api/category/1088"
+      },
+      {
+        "t": "2026-10-14T21:30:19.261378139Z",
+        "ep": "category-card",
+        "dur": 2966,
+        "status": "200",
+        "url": "http://nodebb:4567/api/category/2035"
+      },
+      {
+        "t": "2026-10-14T21:30:18.440966516Z",
+        "ep": "category-card",
+        "dur": 2946,
+        "status": "200",
+        "url": "http://nodebb:4567/api/category/37"
+      },
+      {
+        "t": "2026-10-14T21:30:19.139613786Z",
+        "ep": "category-card",
+        "dur": 2911,
+        "status": "200",
+        "url": "http://nodebb:4567/api/category/2050"
+      },
+      {
+        "t": "2026-10-14T21:31:22.351499335Z",
+        "ep": "category-card",
+        "dur": 2859,
+        "status": "200",
+        "url": "http://nodebb:4567/api/category/120"
+      },
+      {
+        "t": "2026-10-14T21:31:22.226225609Z",
+        "ep": "category-card",
+        "dur": 2834,
+        "status": "200",
+        "url": "http://nodebb:4567/api/category/1648"
+      },
+      {
+        "t": "2026-10-14T21:31:22.29039757Z",
+        "ep": "category-card",
+        "dur": 2832,
+        "status": "200",
+        "url": "http://nodebb:4567/api/category/2759"
+      },
+      {
+        "t": "2026-10-14T21:31:22.103064398Z",
+        "ep": "category-card",
+        "dur": 2778,
+        "status": "200",
+        "url": "http://nodebb:4567/api/category/1598"
+      },
+      {
+        "t": "2026-10-14T21:30:18.684764479Z",
+        "ep": "category-card",
+        "dur": 2723,
+        "status": "200",
+        "url": "http://nodebb:4567/api/category/2846"
+      },
+      {
+        "t": "2026-10-14T21:33:31.17988551Z",
+        "ep": "category-card",
+        "dur": 2695,
+        "status": "200",
+        "url": "http://nodebb:4567/api/category/1913"
+      },
+      {
+        "t": "2026-10-14T21:31:23.99550115Z",
+        "ep": "category-card",
+        "dur": 2637,
+        "status": "200",
+        "url": "http://nodebb:4567/api/category/1454"
+      },
+      {
+        "t": "2026-10-14T21:31:22.140399141Z",
+        "ep": "category-card",
+        "dur": 2614,
+        "status": "200",
+        "url": "http://nodebb:4567/api/category/2635"
+      },
+      {
+        "t": "2026-10-14T21:31:22.251735676Z",
+        "ep": "category-card",
+        "dur": 2593,
+        "status": "200",
+        "url": "http://nodebb:4567/api/category/559"
+      },
+      {
+        "t": "2026-10-14T21:31:22.516065283Z",
+        "ep": "category-card",
+        "dur": 2590,
+        "status": "200",
+        "url": "http://nodebb:4567/api/category/2481"
+      },
+      {
+        "t": "2026-10-14T21:34:35.232466373Z",
+        "ep": "category-card",
+        "dur": 2584,
+        "status": "200",
+        "url": "http://nodebb:4567/api/category/2724"
+      },
+      {
+        "t": "2026-10-14T21:33:30.699629017Z",
+        "ep": "category-card",
+        "dur": 2580,
+        "status": "200",
+        "url": "http://nodebb:4567/api/category/1382"
+      },
+      {
+        "t": "2026-10-14T21:34:35.496296398Z",
+        "ep": "category-card",
+        "dur": 2580,
+        "status": "200",
+        "url": "http://nodebb:4567/api/category/323"
+      },
+      {
+        "t": "2026-10-14T21:30:18.738886341Z",
+        "ep": "category-card",
+        "dur": 2577,
+        "status": "200",
+        "url": "http://nodebb:4567/api/category/2622"
+      },
+      {
+        "t": "2026-10-14T21:34:35.31716699Z",
+        "ep": "category-card",
+        "dur": 2568,
+        "status": "200",
+        "url": "http://nodebb:4567/api/category/754"
+      },
+      {
+        "t": "2026-10-14T21:31:21.353808381Z",
+        "ep": "category-card",
+        "dur": 2562,
+        "status": "200",
+        "url": "http://nodebb:4567/api/category/2625"
+      },
+      {
+        "t": "2026-10-14T21:31:21.180597011Z",
+        "ep": "category-card",
+        "dur": 2556,
+        "status": "200",
+        "url": "http://nodebb:4567/api/category/2141"
+      },
+      {
+        "t": "2026-10-14T21:31:21.246046097Z",
+        "ep": "category-card",
+        "dur": 2553,
+        "status": "200",
+        "url": "http://nodebb:4567/api/category/1375"
+      },
+      {
+        "t": "2026-10-14T21:34:51.666040063Z",
+        "ep": "category-card",
+        "dur": 2551,
+        "status": "200",
+        "url": "http://nodebb:4567/api/category/2336"
+      },
+      {
+        "t": "2026-10-14T21:33:31.227257444Z",
+        "ep": "category-card",
+        "dur": 2542,
+        "status": "200",
+        "url": "http://nodebb:4567/api/category/1830"
+      }
+    ],
+    "timeline10s": [
+      {
+        "bucket": 0,
+        "t": "21:30:14",
+        "n": 128,
+        "max": 3504,
+        "sendN": 131,
+        "sendSlow": 131
+      },
+      {
+        "bucket": 1,
+        "t": "21:30:24",
+        "n": 200,
+        "max": 1369,
+        "sendN": 219,
+        "sendSlow": 219
+      },
+      {
+        "bucket": 2,
+        "t": "21:30:34",
+        "n": 166,
+        "max": 1356,
+        "sendN": 231,
+        "sendSlow": 231
+      },
+      {
+        "bucket": 3,
+        "t": "21:30:44",
+        "n": 166,
+        "max": 1464,
+        "sendN": 227,
+        "sendSlow": 227
+      },
+      {
+        "bucket": 4,
+        "t": "21:30:54",
+        "n": 154,
+        "max": 1496,
+        "sendN": 228,
+        "sendSlow": 228
+      },
+      {
+        "bucket": 5,
+        "t": "21:31:04",
+        "n": 152,
+        "max": 2116,
+        "sendN": 174,
+        "sendSlow": 174
+      },
+      {
+        "bucket": 6,
+        "t": "21:31:14",
+        "n": 128,
+        "max": 2859,
+        "sendN": 126,
+        "sendSlow": 126
+      },
+      {
+        "bucket": 7,
+        "t": "21:31:24",
+        "n": 127,
+        "max": 2539,
+        "sendN": 237,
+        "sendSlow": 237
+      },
+      {
+        "bucket": 8,
+        "t": "21:31:34",
+        "n": 127,
+        "max": 1896,
+        "sendN": 197,
+        "sendSlow": 197
+      },
+      {
+        "bucket": 9,
+        "t": "21:31:44",
+        "n": 118,
+        "max": 2134,
+        "sendN": 173,
+        "sendSlow": 173
+      },
+      {
+        "bucket": 10,
+        "t": "21:31:54",
+        "n": 90,
+        "max": 1579,
+        "sendN": 230,
+        "sendSlow": 230
+      },
+      {
+        "bucket": 11,
+        "t": "21:32:04",
+        "n": 86,
+        "max": 2034,
+        "sendN": 191,
+        "sendSlow": 191
+      },
+      {
+        "bucket": 12,
+        "t": "21:32:14",
+        "n": 116,
+        "max": 1671,
+        "sendN": 231,
+        "sendSlow": 231
+      },
+      {
+        "bucket": 13,
+        "t": "21:32:24",
+        "n": 86,
+        "max": 2169,
+        "sendN": 180,
+        "sendSlow": 180
+      },
+      {
+        "bucket": 14,
+        "t": "21:32:34",
+        "n": 67,
+        "max": 1413,
+        "sendN": 241,
+        "sendSlow": 241
+      },
+      {
+        "bucket": 15,
+        "t": "21:32:44",
+        "n": 79,
+        "max": 1727,
+        "sendN": 239,
+        "sendSlow": 239
+      },
+      {
+        "bucket": 16,
+        "t": "21:32:54",
+        "n": 67,
+        "max": 1552,
+        "sendN": 182,
+        "sendSlow": 182
+      },
+      {
+        "bucket": 17,
+        "t": "21:33:04",
+        "n": 65,
+        "max": 1707,
+        "sendN": 240,
+        "sendSlow": 240
+      },
+      {
+        "bucket": 18,
+        "t": "21:33:14",
+        "n": 78,
+        "max": 1834,
+        "sendN": 182,
+        "sendSlow": 182
+      },
+      {
+        "bucket": 19,
+        "t": "21:33:24",
+        "n": 96,
+        "max": 2695,
+        "sendN": 179,
+        "sendSlow": 179
+      },
+      {
+        "bucket": 20,
+        "t": "21:33:34",
+        "n": 70,
+        "max": 1959,
+        "sendN": 180,
+        "sendSlow": 180
+      },
+      {
+        "bucket": 21,
+        "t": "21:33:44",
+        "n": 68,
+        "max": 1772,
+        "sendN": 240,
+        "sendSlow": 240
+      },
+      {
+        "bucket": 22,
+        "t": "21:33:54",
+        "n": 58,
+        "max": 1666,
+        "sendN": 180,
+        "sendSlow": 180
+      },
+      {
+        "bucket": 23,
+        "t": "21:34:04",
+        "n": 75,
+        "max": 1636,
+        "sendN": 241,
+        "sendSlow": 241
+      },
+      {
+        "bucket": 24,
+        "t": "21:34:14",
+        "n": 85,
+        "max": 1650,
+        "sendN": 240,
+        "sendSlow": 240
+      },
+      {
+        "bucket": 25,
+        "t": "21:34:24",
+        "n": 67,
+        "max": 1873,
+        "sendN": 180,
+        "sendSlow": 180
+      },
+      {
+        "bucket": 26,
+        "t": "21:34:34",
+        "n": 77,
+        "max": 2584,
+        "sendN": 182,
+        "sendSlow": 182
+      },
+      {
+        "bucket": 27,
+        "t": "21:34:44",
+        "n": 73,
+        "max": 2551,
+        "sendN": 180,
+        "sendSlow": 180
+      },
+      {
+        "bucket": 28,
+        "t": "21:34:54",
+        "n": 82,
+        "max": 2066,
+        "sendN": 238,
+        "sendSlow": 238
+      },
+      {
+        "bucket": 29,
+        "t": "21:35:04",
+        "n": 73,
+        "max": 1757,
+        "sendN": 240,
+        "sendSlow": 240
+      },
+      {
+        "bucket": 30,
+        "t": "21:35:14",
+        "n": 5,
+        "max": 1200,
+        "sendN": 60,
+        "sendSlow": 60
+      }
+    ]
+  },
+  "send": {
+    "overall": {
+      "count": 6199,
+      "avg": 2877.1,
+      "p50": 2724.1,
+      "p90": 3567.2,
+      "p95": 4146,
+      "p99": 5099,
+      "max": 6166.8
+    },
+    "hist": {
+      "lt500": 0,
+      "b500_1s": 8,
+      "b1_2s": 46,
+      "b2_4s": 5753,
+      "gte4s": 392
+    },
+    "slow2sCount": 6145,
+    "slowTop20": [
+      {
+        "t": "2026-10-14T21:30:21.371699118Z",
+        "dur": 6167,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:30:21.24130298Z",
+        "dur": 6087,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:30:21.187731677Z",
+        "dur": 5962,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:30:20.916050044Z",
+        "dur": 5901,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:30:20.824403404Z",
+        "dur": 5769,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:30:20.704071579Z",
+        "dur": 5758,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:30:20.704140835Z",
+        "dur": 5739,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:31:24.80963806Z",
+        "dur": 5707,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:31:24.83794018Z",
+        "dur": 5706,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:30:20.881190012Z",
+        "dur": 5695,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:30:20.580059335Z",
+        "dur": 5675,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:30:20.746942021Z",
+        "dur": 5671,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:31:24.908131959Z",
+        "dur": 5666,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:31:24.184768485Z",
+        "dur": 5642,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:30:20.719991292Z",
+        "dur": 5625,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:31:24.014690045Z",
+        "dur": 5621,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:31:24.692187754Z",
+        "dur": 5620,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:30:20.539195282Z",
+        "dur": 5614,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:31:24.692248458Z",
+        "dur": 5610,
+        "status": "200"
+      },
+      {
+        "t": "2026-10-14T21:30:20.720220269Z",
+        "dur": 5605,
+        "status": "200"
+      }
+    ],
+    "failed": [
+      {
+        "t": "2026-10-14T21:30:35.213859857Z",
+        "status": "403",
+        "url": "http://nodebb:4567/api/v3/chats/2"
+      },
+      {
+        "t": "2026-10-14T21:31:03.947708949Z",
+        "status": "403",
+        "url": "http://nodebb:4567/api/v3/chats/4"
+      },
+      {
+        "t": "2026-10-14T21:31:42.891532566Z",
+        "status": "403",
+        "url": "http://nodebb:4567/api/v3/chats/4"
+      },
+      {
+        "t": "2026-10-14T21:33:05.194856177Z",
+        "status": "403",
+        "url": "http://nodebb:4567/api/v3/chats/4"
+      },
+      {
+        "t": "2026-10-14T21:33:28.670264345Z",
+        "status": "403",
+        "url": "http://nodebb:4567/api/v3/chats/5"
+      },
+      {
+        "t": "2026-10-14T21:34:06.023286956Z",
+        "status": "403",
+        "url": "http://nodebb:4567/api/v3/chats/4"
+      }
+    ]
+  },
+  "chat": {
+    "overall": {
+      "count": 3788,
+      "avg": 2968.5,
+      "p50": 2812,
+      "p90": 3677,
+      "p95": 4252,
+      "p99": 5279,
+      "max": 6228
+    },
+    "hist": {
+      "lt100": 0,
+      "b100_500": 0,
+      "b500_1s": 8,
+      "b1_2s": 21,
+      "gte2s": 3759
+    }
+  }
+}

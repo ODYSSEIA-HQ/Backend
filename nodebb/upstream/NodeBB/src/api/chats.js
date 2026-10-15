@@ -18,14 +18,21 @@ const chatsAPI = module.exports;
 async function rateLimitExceeded(caller, field) {
 	const session = caller.request ? caller.request.session : caller.session; // socket vs req
 	const now = Date.now();
-	const [isPrivileged, reputation] = await Promise.all([
-		user.isPrivileged(caller.uid),
-		user.getUserField(caller.uid, 'reputation'),
-	]);
-	const newbie = !isPrivileged && meta.config.newbieReputationThreshold > reputation;
-	const delay = newbie ? meta.config.newbieChatMessageDelay : meta.config.chatMessageDelay;
 	session[field] = session[field] || 0;
-
+	// Once both cooldowns have elapsed, identity cannot change the decision.
+	if (now - session[field] >= Math.max(meta.config.chatMessageDelay, meta.config.newbieChatMessageDelay)) {
+		session[field] = now;
+		return false;
+	}
+	let delay = meta.config.chatMessageDelay;
+	// Only check moderation privileges when they can change the delay. Checking
+	// isPrivileged scans all categories; established users need no such scan.
+	if (meta.config.newbieChatMessageDelay !== delay) {
+		const reputation = await user.getUserField(caller.uid, 'reputation');
+		if (meta.config.newbieReputationThreshold > reputation && !await user.isPrivileged(caller.uid)) {
+			delay = meta.config.newbieChatMessageDelay;
+		}
+	}
 	if (now - session[field] < delay) {
 		return true;
 	}

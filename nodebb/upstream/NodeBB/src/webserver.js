@@ -69,6 +69,14 @@ if (nconf.get('ssl')) {
 module.exports.server = server;
 module.exports.app = app;
 
+// odysseia: LB (Caddy) 后置场景下 Node 默认 5s keepAliveTimeout 过短——
+// 事件循环拥塞时 data 事件（poll）被拖住而空闲定时器（timers）照常触发，
+// 会带未读数据 RST in-flight 连接 → 上游 502。放宽到 75s（< Caddy/Go IdleConnTimeout 90s，
+// 闲置连接改由 Caddy 干净 FIN），headersTimeout 相应抬高（须 > keepAliveTimeout）。
+// 实证：k6 2500 在线满载（4 worker CPU 418%+）send 失败率 3.4%→0.1%，Caddy reset 归零。
+server.keepAliveTimeout = 75 * 1000;
+server.headersTimeout = 85 * 1000;
+
 server.on('error', (err) => {
 	if (err.code === 'EADDRINUSE') {
 		winston.error(`NodeBB address in use, exiting...\n${err.stack}`);
